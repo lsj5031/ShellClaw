@@ -196,7 +196,7 @@ ${status_text}"
         if (( ${#edit_text} > 4000 )); then
           edit_text="…${edit_text: -3900}"
         fi
-        "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" 2>/dev/null || true
+        "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" --with-cancel-btn 2>/dev/null || true
         "$ROOT_DIR/send_telegram.sh" --typing 2>/dev/null || true
         last_edit_ts=$now
       fi
