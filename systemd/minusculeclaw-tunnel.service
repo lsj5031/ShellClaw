@@ -1,0 +1,13 @@
+[Unit]
+Description=MinusculeClaw Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/leo/.local/bin/cloudflared tunnel --config /home/leo/.cloudflared/config-claw.yml run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -65,7 +65,11 @@ validate_runtime_requirements() {
 
   api_base="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
   file_base="https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}"
-  log_info "MinusculeClaw ready (mode=$WEBHOOK_MODE, poll_interval=${POLL_INTERVAL_SECONDS}s, exec_policy=$EXEC_POLICY)"
+  if [[ "$WEBHOOK_MODE" == "on" ]]; then
+    log_info "MinusculeClaw ready (mode=webhook, exec_policy=$EXEC_POLICY)"
+  else
+    log_info "MinusculeClaw ready (mode=poll, poll_interval=${POLL_INTERVAL_SECONDS}s, exec_policy=$EXEC_POLICY)"
+  fi
 }
 
 extract_marker() {
@@ -509,15 +513,54 @@ process_update_obj() {
 
 consume_webhook_queue_line() {
   local queue_file="$ROOT_DIR/runtime/webhook_updates.jsonl"
-  if [[ ! -s "$queue_file" ]]; then
-    return 1
+  local lock_file="$ROOT_DIR/runtime/webhook_queue.lock"
+  (
+    flock -w 2 9
+    if [[ ! -s "$queue_file" ]]; then
+      exit 1
+    fi
+    head -n 1 "$queue_file"
+    tail -n +2 "$queue_file" > "$queue_file.tmp" || true
+    mv "$queue_file.tmp" "$queue_file"
+  ) 9>"$lock_file"
+}
+
+drain_webhook_queue() {
+  while true; do
+    local obj
+    set +e
+    obj="$(consume_webhook_queue_line)"
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 || -z "$(trim "$obj")" ]]; then
+      break
+    fi
+    process_update_obj "$obj"
+  done
+}
+
+webhook_loop() {
+  local queue_file="$ROOT_DIR/runtime/webhook_updates.jsonl"
+  local notify_fifo="$ROOT_DIR/runtime/webhook_notify.fifo"
+  touch "$queue_file"
+
+  # Create notification FIFO if missing
+  if [[ ! -p "$notify_fifo" ]]; then
+    rm -f "$notify_fifo"
+    mkfifo "$notify_fifo"
   fi
 
-  local line
-  line="$(head -n 1 "$queue_file")"
-  tail -n +2 "$queue_file" > "$queue_file.tmp" || true
-  mv "$queue_file.tmp" "$queue_file"
-  printf '%s\n' "$line"
+  # Open FIFO read-write on fd 3 to prevent EOF when last writer disconnects
+  exec 3<>"$notify_fifo"
+  log_info "webhook loop: waiting on $notify_fifo"
+
+  drain_webhook_queue
+
+  while true; do
+    # Block until webhook_server.py signals or 30s safety timeout
+    read -r -t 30 -n 1 <&3 || true
+    drain_webhook_queue
+  done
 }
 
 poll_once() {
@@ -563,25 +606,9 @@ poll_once() {
 }
 
 main_loop() {
-  log_info "agent loop started"
+  log_info "poll loop started (interval=${POLL_INTERVAL_SECONDS}s)"
   while true; do
-    local handled=0
-    if [[ "$WEBHOOK_MODE" == "on" ]]; then
-      local webhook_obj
-      set +e
-      webhook_obj="$(consume_webhook_queue_line)"
-      local w_rc=$?
-      set -e
-      if [[ $w_rc -eq 0 && -n "$(trim "$webhook_obj")" ]]; then
-        process_update_obj "$webhook_obj"
-        handled=1
-      fi
-    fi
-
-    if [[ $handled -eq 0 ]]; then
-      poll_once
-    fi
-
+    poll_once
     sleep "$POLL_INTERVAL_SECONDS"
   done
 }
@@ -659,17 +686,15 @@ fi
 
 if [[ "$once" == "true" ]]; then
   if [[ "$WEBHOOK_MODE" == "on" ]]; then
-    set +e
-    single_obj="$(consume_webhook_queue_line)"
-    single_rc=$?
-    set -e
-    if [[ $single_rc -eq 0 && -n "$(trim "$single_obj")" ]]; then
-      process_update_obj "$single_obj"
-      exit 0
-    fi
+    drain_webhook_queue
+  else
+    poll_once
   fi
-  poll_once
   exit 0
 fi
 
-main_loop
+if [[ "$WEBHOOK_MODE" == "on" ]]; then
+  webhook_loop
+else
+  main_loop
+fi

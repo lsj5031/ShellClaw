@@ -114,6 +114,7 @@ fi
 
 if command -v glm-asr >/dev/null 2>&1; then
   current_asr_cmd="$(env_value "ASR_CMD_TEMPLATE" .env)"
+  # shellcheck disable=SC2016
   if [[ -z "${current_asr_cmd// }" || "$current_asr_cmd" == "''" || "$current_asr_cmd" == *'glm-asr "$AUDIO_INPUT"'* ]]; then
     set_env_value "ASR_CMD_TEMPLATE" "'glm-asr transcribe \"\$AUDIO_INPUT_PREP\"'" .env
     echo "Set ASR_CMD_TEMPLATE to glm-asr transcribe"
@@ -149,35 +150,30 @@ if command -v kitten-say >/dev/null 2>&1; then
 fi
 
 if [[ "${WEBHOOK_MODE:-off}" == "on" && -n "${WEBHOOK_PUBLIC_URL:-}" ]]; then
-  curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-    -d "url=${WEBHOOK_PUBLIC_URL}" >/dev/null || true
+  ./webhook_ctl.sh register || true
 fi
 
-chmod +x agent.sh asr.sh tts_to_voice.sh send_telegram.sh heartbeat.sh setup.sh dashboard.py webhook_server.py
+chmod +x agent.sh asr.sh tts_to_voice.sh send_telegram.sh heartbeat.sh setup.sh dashboard.py webhook_server.py webhook_ctl.sh
 
 cat <<'MSG'
 
 MinusculeClaw setup is complete.
 
-Start once for smoke test:
-  ./agent.sh --once
+Quick smoke test:
+  make test
 
-Run continuously:
-  ./agent.sh
+Install & start all services:
+  make install
+  make webhook-register
+  make start
+
+Useful commands:
+  make status            # check all services
+  make logs              # follow agent logs
+  make restart           # restart everything
 
 Dashboard:
-  ./dashboard.py
-  # open http://localhost:8080
-
-systemd user install:
-  mkdir -p ~/.config/systemd/user
-  cp systemd/minusculeclaw* ~/.config/systemd/user/
-  systemctl --user daemon-reload
-  systemctl --user enable --now minusculeclaw.service
-  systemctl --user enable --now minusculeclaw-heartbeat.timer
-
-cron option:
-  crontab cron/minusculeclaw.crontab.example
+  ./dashboard.py         # open http://localhost:8080
 
 MinusculeClaw is now purring on Telegram.
 MSG

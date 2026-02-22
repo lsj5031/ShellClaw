@@ -8,21 +8,29 @@ Bash-powered personal voice agent that runs locally and talks over Telegram.
 
 ```mermaid
 flowchart TB
+    subgraph mode_select["Mode Selection"]
+        CHECK{WEBHOOK_MODE?}
+        CHECK -->|"on"| webhook_loop
+        CHECK -->|"off"| main_loop
+    end
+
+    subgraph webhook_loop["webhook_loop()"]
+        direction TB
+        FIFO_INIT[Create FIFO<br/>Open fd 3 read-write]
+        DRAIN1[drain_webhook_queue]
+        FIFO_WAIT["read -r -t 30 &lt;&amp;3<br/>(block on FIFO)"]
+        DRAIN2[drain_webhook_queue]
+        FIFO_INIT --> DRAIN1 --> FIFO_WAIT
+        FIFO_WAIT -->|"signal or timeout"| DRAIN2
+        DRAIN2 --> FIFO_WAIT
+    end
+
     subgraph main_loop["main_loop()"]
         direction TB
         START([Loop Start])
-        CHECK{WEBHOOK_MODE?}
-        WHQ[consume_webhook_queue_line]
         POLL[poll_once]
         SLEEP[sleep $POLL_INTERVAL]
-        START --> CHECK
-        CHECK -->|"on"| WHQ
-        CHECK -->|"off"| POLL
-        WHQ -->|has data| PROCESS
-        WHQ -->|empty| POLL
-        POLL --> PROCESS
-        PROCESS --> SLEEP
-        SLEEP --> START
+        START --> POLL --> SLEEP --> START
     end
 
     subgraph poll_once["poll_once()"]
@@ -71,6 +79,7 @@ flowchart TB
     end
 
     POLL -.->|"for each update"| process_update
+    DRAIN2 -.->|"for each queued line"| process_update
     PROCESS -.-> handle_user
 ```
 
@@ -216,11 +225,16 @@ flowchart TB
 
     subgraph MinusculeClaw
         direction TB
-        AGENT[agent.sh<br/>Main Loop]
+        AGENT[agent.sh]
 
         subgraph Ingress
-            POLL[Long Polling<br/>getUpdates]
-            WH[Webhook Server<br/>webhook_server.py]
+            direction TB
+            subgraph webhook_path["Webhook Mode (default)"]
+                CF[cloudflared tunnel]
+                WH[webhook_server.py<br/>secret token + flock]
+                FIFO([FIFO notify pipe])
+            end
+            POLL[Long Polling<br/>getUpdates<br/>fallback mode]
         end
 
         subgraph Processing
@@ -237,12 +251,12 @@ flowchart TB
         end
     end
 
-    TG -->|"Text Message"| POLL
-    TG -->|"Voice Note"| POLL
-    TG -->|"Webhook (optional)"| WH
-
-    POLL --> AGENT
-    WH -->|"JSONL queue"| AGENT
+    TG -->|"Webhook POST"| CF
+    CF --> WH
+    WH -->|"flock + append JSONL"| FIFO
+    FIFO -->|"wake agent"| AGENT
+    TG -.->|"Poll (if webhook off)"| POLL
+    POLL -.-> AGENT
 
     AGENT -->|"Voice file"| ASR
     ASR -->|"Transcript"| AGENT
@@ -310,7 +324,7 @@ mindmap
   root((MinusculeClaw))
     Core Scripts
       agent.sh
-        Main polling/processing loop
+        Webhook loop or poll loop
         Context building
         Marker parsing
       asr.sh
@@ -333,9 +347,17 @@ mindmap
         Logging utilities
       webhook_server.py
         HTTP POST receiver
+        Secret token verification
+        FIFO notification
         JSONL queue writer
+      webhook_ctl.sh
+        Register/unregister webhook
+        Webhook status
       dashboard.py
         Web UI for turns
+      Makefile
+        Service lifecycle
+        Logs and webhook management
     Storage
       state.db
         turns table
@@ -409,14 +431,16 @@ flowchart LR
 
 ## Repo layout
 ```
-agent.sh          # Main loop - polling, context building, Codex orchestration
+agent.sh          # Main loop - webhook or poll, context building, Codex orchestration
 asr.sh            # Voice note transcription (HTTP or CLI backend)
 tts_to_voice.sh   # Text-to-voice conversion with Opus encoding
 send_telegram.sh  # Telegram API wrapper (sendMessage/sendVoice)
 heartbeat.sh      # Proactive daily turn trigger
+webhook_server.py # Webhook receiver (secret token, flock, FIFO signal)
+webhook_ctl.sh    # Register/unregister/status for Telegram webhook
 dashboard.py      # Web UI showing last 50 turns
-webhook_server.py # Optional webhook receiver (writes to JSONL queue)
 lib/common.sh     # Shared helpers (env, SQLite, logging)
+Makefile          # Service lifecycle: make install/start/stop/restart/status/logs
 SOUL.md           # System prompt / personality
 USER.md           # User preferences
 MEMORY.md         # Append-only memory facts
@@ -429,6 +453,7 @@ TASKS/pending.md  # Task list
 - `codex` CLI in `PATH`
 - A working ASR backend
 - A working TTS backend
+- `cloudflared` (for webhook mode with Cloudflare Tunnel)
 
 Recommended backends:
 - ASR: https://github.com/lsj5031/GlmAsrDocker
@@ -438,8 +463,10 @@ Recommended backends:
 ```bash
 git clone https://github.com/lsj5031/MinusculeClaw.git
 cd MinusculeClaw
-./setup.sh
-./agent.sh
+./setup.sh            # interactive: sets .env, inits DB
+make install           # installs systemd units, enables linger
+make webhook-register  # registers Telegram webhook
+make start             # starts agent + webhook server + tunnel
 ```
 
 ## Environment contract
@@ -470,22 +497,47 @@ MinusculeClaw expects strict markers in Codex output:
 If markers are missing, MinusculeClaw sends a safe fallback text reply and logs `parse_fallback`.
 
 ## Ingress modes
-- `WEBHOOK_MODE=off` (default): long polling (`getUpdates`).
-- `WEBHOOK_MODE=on`: consume updates from `runtime/webhook_updates.jsonl`; run webhook receiver with `./webhook_server.py`.
-- `WEBHOOK_PUBLIC_URL`: optional; if set, `setup.sh` can register Telegram webhook.
 
-## systemd (user)
+### Webhook mode (recommended, `WEBHOOK_MODE=on`)
+Telegram pushes updates via webhook → cloudflared tunnel → `webhook_server.py` → JSONL queue.
+The agent sleeps on a FIFO pipe and wakes instantly when new data arrives (zero-CPU idle).
+
+- `WEBHOOK_PUBLIC_URL` — your tunnel domain (e.g. `https://claw.liu.nz`)
+- `WEBHOOK_SECRET` — secret token verified via `X-Telegram-Bot-Api-Secret-Token` header
+- Queue writes are `flock`-protected against reader/writer races
+- Register/unregister with `./webhook_ctl.sh register|unregister|status`
+
+### Poll mode (fallback, `WEBHOOK_MODE=off`)
+Agent calls `getUpdates` every `POLL_INTERVAL_SECONDS` (default 2s). No extra services needed.
+
+## Makefile
 ```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/minusculeclaw* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now minusculeclaw.service
-systemctl --user enable --now minusculeclaw-heartbeat.timer
+make help              # show all targets
+make install           # install systemd units + enable linger
+make start / stop      # start/stop all services
+make restart           # restart all services
+make status            # show service status
+make logs              # follow agent logs (also: logs-webhook, logs-tunnel)
+make webhook-register  # register Telegram webhook
+make webhook-status    # check webhook info
+make lint              # shellcheck all scripts
+make test              # smoke test via --inject-text
 ```
 
-## cron alternative
+## systemd services
+| Unit | Description |
+|------|-------------|
+| `minusculeclaw.service` | Main agent loop (webhook or poll) |
+| `minusculeclaw-webhook.service` | Webhook HTTP server on `:8787` |
+| `minusculeclaw-tunnel.service` | Cloudflare Tunnel (`cloudflared`) |
+| `minusculeclaw-heartbeat.timer` | Daily heartbeat at 09:00 |
+
+Install all with `make install`, or manually:
 ```bash
-crontab cron/minusculeclaw.crontab.example
+cp systemd/minusculeclaw* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable minusculeclaw.service minusculeclaw-webhook.service minusculeclaw-tunnel.service minusculeclaw-heartbeat.timer
+sudo loginctl enable-linger $USER   # services survive logout & start on boot
 ```
 
 ## Dashboard
