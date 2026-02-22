@@ -1,10 +1,107 @@
-# MinusculeClaw
+# MinusculeClaw 🦀
 
-Bash-powered personal voice agent that runs locally and talks over Telegram.
+**Pure-bash local voice agent that lives in Telegram.**
+
+Send a voice note → local ASR on your laptop → Codex CLI (with real file access + persistent Markdown memory) → local TTS voice reply.
+
+**Everything is stored in simple, human-readable `.md` files** you can literally `cat` or open in any editor.
+
+No servers. No heavy frameworks. No Docker-compose. Maximum privacy and hackability.
 
 <img src="docs/images/minusculeclaw-avatar.jpg" alt="MinusculeClaw project avatar" width="280" />
 
-## agent.sh Internals
+## ✨ Why people love it
+
+- Full voice round-trip with **local** ASR + TTS
+- Persistent memory & tasks you can read/edit by hand (`cat MEMORY.md`)
+- Uses OpenAI **Codex CLI** as the brain (it can actually read/write your files)
+- Live progress updates in Telegram (edits message with what Codex is doing)
+- Local web dashboard (`http://localhost:8080`)
+- Optional daily heartbeat (the bot can message you proactively)
+- Three safety modes: `strict` | `allowlist` | `yolo`
+- Works great in English and Chinese (and likely more)
+
+## Demo
+
+![Demo: Voice + text conversation with memory, task management, and web search](MinusculeClaw.png)
+
+*Voice notes, memory system explanation, task/memory distinction, web search — all in one conversation.*
+
+## 🚀 Quick Start
+
+```bash
+git clone https://github.com/lsj5031/MinusculeClaw.git
+cd MinusculeClaw
+
+cp .env.example .env
+# Edit .env → add your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+
+./setup.sh            # interactive: sets .env, inits DB
+make install           # installs systemd units, enables linger
+make start             # starts agent (poll mode by default)
+
+# Optional: for webhook mode instead of polling, set WEBHOOK_MODE=on in .env, then:
+# make webhook-register && make start
+```
+
+**Recommended backends** (super easy to run):
+- ASR → [GlmAsrDocker](https://github.com/lsj5031/GlmAsrDocker)
+- TTS → [kitten-tts-rs](https://github.com/lsj5031/kitten-tts-rs)
+
+Then just send a voice note to your Telegram bot — done!
+
+## What it does
+
+- Telegram text and voice input.
+- Local ASR via your own backend (HTTP endpoint or CLI).
+- Agent loop via Codex CLI (`codex exec`).
+- Local TTS backend → Opus OGG → Telegram `sendVoice`.
+- Persistent state in SQLite + human-readable markdown files.
+- Daily logs and optional proactive heartbeat.
+- Optional local dashboard on `http://localhost:8080`.
+
+## How it works (high-level)
+
+1. Telegram voice/text → `agent.sh`
+2. Local ASR (`asr.sh`) → transcript
+3. Build rich context (`SOUL.md` + `USER.md` + `MEMORY.md` + `TASKS/pending.md` + recent history)
+4. `codex exec --json` with special marker contract + live Telegram progress updates
+5. Parse markers → reply via text or local TTS (`tts_to_voice.sh`)
+6. Auto-append to memory/tasks + log everything
+
+## Repo layout
+
+```
+agent.sh          # Main loop - webhook or poll, context building, Codex orchestration
+asr.sh            # Voice note transcription (HTTP or CLI backend)
+tts_to_voice.sh   # Text-to-voice conversion with Opus encoding
+send_telegram.sh  # Telegram API wrapper (sendMessage/sendVoice/editMessageText)
+heartbeat.sh      # Proactive daily turn trigger
+webhook_server.py # Webhook receiver (secret token, flock, FIFO signal)
+webhook_ctl.sh    # Register/unregister/status for Telegram webhook
+dashboard.py      # Web UI showing last 50 turns
+lib/common.sh     # Shared helpers (env, SQLite, logging)
+Makefile          # Service lifecycle: make install/start/stop/restart/status/logs
+SOUL.md           # System prompt / personality
+USER.md           # User preferences
+MEMORY.md         # Append-only memory facts
+TASKS/pending.md  # Task list
+```
+
+## Requirements
+
+- Bash 5+
+- `curl`, `jq`, `ffmpeg`, `sqlite3`
+- `codex` CLI in `PATH`
+- A working ASR backend
+- A working TTS backend
+- `cloudflared` (for webhook mode with Cloudflare Tunnel)
+
+---
+
+## Deep Technical Dive
+
+### agent.sh Internals
 
 ```mermaid
 flowchart TB
@@ -61,20 +158,21 @@ flowchart TB
     subgraph handle_user["handle_user_message()"]
         direction TB
         BUILD[build_context_file]
-        RUN[run_codex]
+        PROGRESS[Send ⏳ Thinking…<br/>get message_id]
+        RUN[run_codex --json<br/>stream to monitor]
         EXTRACT2[extract_marker<br/>TELEGRAM_REPLY<br/>VOICE_REPLY]
         CHECK_REPLY{Has reply?}
-        SEND_TEXT[safe_send_text]
+        EDIT_TEXT[editMessageText<br/>final reply]
         SEND_VOICE[safe_send_voice]
         APPEND[append_memory_and_tasks]
         STORE[store_turn to SQLite]
         LOG[append_daily_log]
         
-        BUILD --> RUN --> EXTRACT2 --> CHECK_REPLY
+        BUILD --> PROGRESS --> RUN --> EXTRACT2 --> CHECK_REPLY
         CHECK_REPLY -->|voice input| SEND_VOICE
-        CHECK_REPLY -->|text input| SEND_TEXT
+        CHECK_REPLY -->|text input| EDIT_TEXT
         SEND_VOICE --> APPEND
-        SEND_TEXT --> APPEND
+        EDIT_TEXT --> APPEND
         APPEND --> STORE --> LOG
     end
 
@@ -83,7 +181,7 @@ flowchart TB
     PROCESS -.-> handle_user
 ```
 
-## Context Building
+### Context Building
 
 ```mermaid
 flowchart LR
@@ -120,7 +218,7 @@ flowchart LR
     RECENT --> Context_File
 ```
 
-## Codex Execution Modes
+### Codex Execution Modes
 
 ```mermaid
 flowchart TB
@@ -135,7 +233,9 @@ flowchart TB
         end
         
         OPT_MODEL["--model $CODEX_MODEL<br/>(if set)"]
-        EXEC["Execute codex<br/>stdin < context_file"]
+        STREAM{"progress_msg_id<br/>set?"}
+        JSON_PATH["--json mode<br/>pipe to codex_stream_monitor"]
+        PLAIN_PATH["plain mode<br/>capture stdout"]
         OUTPUT["--output-last-message out_file"]
         PARSE[Read out_file]
         RETURN[Return output]
@@ -143,10 +243,13 @@ flowchart TB
     
     INPUT --> BUILD_CMD
     BUILD_CMD --> POLICY
-    POLICY --> OPT_MODEL --> EXEC --> OUTPUT --> PARSE --> RETURN
+    POLICY --> OPT_MODEL --> STREAM
+    STREAM -->|"yes"| JSON_PATH --> OUTPUT
+    STREAM -->|"no"| PLAIN_PATH --> OUTPUT
+    OUTPUT --> PARSE --> RETURN
 ```
 
-## Marker Parsing
+### Marker Parsing
 
 ```mermaid
 flowchart LR
@@ -173,7 +276,7 @@ flowchart LR
     L5 --> AWK2 --> TASK_LINES["task_lines"]
 ```
 
-## Reply Dispatch Logic
+### Reply Dispatch Logic
 
 ```mermaid
 flowchart TB
@@ -186,15 +289,16 @@ flowchart TB
         USE_TR_V[Use telegram_reply<br/>as voice text]
         TTS_CALL[safe_send_voice]
         TTS_OK{TTS success?}
-        FALLBACK_V[safe_send_text<br/>telegram_reply]
+        EDIT_PROGRESS_V[editMessageText<br/>telegram_reply]
+        FALLBACK_V[send_or_edit_text<br/>telegram_reply]
     end
     
     subgraph Text_Path["Text Input Path"]
         HAS_TG{telegram_reply<br/>exists?}
-        SEND_TG[safe_send_text<br/>telegram_reply]
+        EDIT_TG[send_or_edit_text<br/>telegram_reply]
         HAS_VR_T{voice_reply<br/>exists?}
         TTS_T[safe_send_voice]
-        FAIL_T["safe_send_text<br/>'Voice output failed'"]
+        FAIL_T["send_or_edit_text<br/>'Voice output failed'"]
     end
     
     START --> INPUT_TYPE
@@ -204,10 +308,10 @@ flowchart TB
     HAS_VOICE -->|"yes"| USE_VR --> TTS_CALL
     HAS_VOICE -->|"no"| USE_TR_V --> TTS_CALL
     TTS_CALL --> TTS_OK
-    TTS_OK -->|"yes"| DONE([done])
+    TTS_OK -->|"yes"| EDIT_PROGRESS_V --> DONE([done])
     TTS_OK -->|"no"| FALLBACK_V --> DONE
     
-    HAS_TG -->|"yes"| SEND_TG --> DONE
+    HAS_TG -->|"yes"| EDIT_TG --> DONE
     HAS_TG -->|"no"| HAS_VR_T
     HAS_VR_T -->|"yes"| TTS_T --> TTS_OK2{TTS success?}
     TTS_OK2 -->|"yes"| DONE
@@ -215,7 +319,7 @@ flowchart TB
     HAS_VR_T -->|"no"| DONE
 ```
 
-## Architecture Overview
+### Architecture Overview
 
 ```mermaid
 flowchart TB
@@ -251,31 +355,24 @@ flowchart TB
         end
     end
 
-    TG -->|"Webhook POST"| CF
-    CF --> WH
-    WH -->|"flock + append JSONL"| FIFO
-    FIFO -->|"wake agent"| AGENT
-    TG -.->|"Poll (if webhook off)"| POLL
-    POLL -.-> AGENT
-
-    AGENT -->|"Voice file"| ASR
-    ASR -->|"Transcript"| AGENT
-
-    AGENT --> CTX
-    CTX -->|"Runtime Context"| CODEX
-    CODEX -->|"Marker Output"| AGENT
-
-    AGENT -->|"Reply Text"| TTS
-    TTS -->|"OGG Voice"| AGENT
-
-    AGENT -->|"sendMessage/sendVoice"| TG
-
+    TG -->|"voice/text"| AGENT
+    AGENT --> ASR
+    ASR --> CTX
+    CTX --> CODEX
+    CODEX --> TTS
+    TTS -->|"voice reply"| TG
+    CODEX -->|"text reply"| TG
     AGENT --> SQLITE
     AGENT --> MD
     AGENT --> LOGS
+
+    CF --> WH --> FIFO --> AGENT
+    TG -->|"webhook POST"| CF
+    TG -->|"getUpdates"| POLL
+    POLL --> AGENT
 ```
 
-## Request Flow
+### Request Flow (Sequence)
 
 ```mermaid
 sequenceDiagram
@@ -286,38 +383,41 @@ sequenceDiagram
     participant TTS as tts_to_voice.sh
     participant DB as SQLite
 
-    alt Voice Message
-        T->>A: Voice Note (OGA)
-        A->>ASR: Audio file
-        ASR->>ASR: ffmpeg preprocess
-        ASR->>ASR: ASR backend
+    T->>A: Voice message / Text
+    
+    alt Voice Input
+        A->>A: download_telegram_file
+        A->>ASR: Transcribe audio
         ASR-->>A: Transcript text
-    else Text Message
-        T->>A: Text message
     end
 
-    A->>A: Build context<br/>(SOUL + USER + MEMORY + TASKS)
-    A->>C: Context file
-    C->>C: Process with AI
-    C-->>A: Marker output
+    A->>A: build_context_file
+    A->>T: sendMessage "⏳ Thinking…" (get message_id)
 
-    A->>A: Extract markers<br/>TELEGRAM_REPLY, VOICE_REPLY,<br/>MEMORY_APPEND, TASK_APPEND
+    A->>C: codex exec --json < context
+    
+    loop JSONL stream events
+        C-->>A: item.started / item.completed
+        A->>T: editMessageText (live status)
+    end
+    
+    C-->>A: Final agent message (markers)
 
-    alt Voice Reply (for voice input)
-        A->>TTS: Text to speak
-        TTS->>TTS: TTS backend → WAV
+    alt Voice Reply
+        A->>TTS: Generate voice
         TTS->>TTS: ffmpeg → Opus OGG
         TTS-->>A: Voice file
         A->>T: sendVoice
+        A->>T: editMessageText (text version)
     else Text Reply
-        A->>T: sendMessage
+        A->>T: editMessageText (final reply)
     end
 
     A->>DB: Store turn
     A->>A: Append to MEMORY.md/TASKS
 ```
 
-## Components
+### Components
 
 ```mermaid
 mindmap
@@ -327,6 +427,7 @@ mindmap
         Webhook loop or poll loop
         Context building
         Marker parsing
+        Live progress streaming
       asr.sh
         Voice transcription
         ffmpeg preprocessing
@@ -338,6 +439,7 @@ mindmap
       send_telegram.sh
         sendMessage wrapper
         sendVoice wrapper
+        editMessageText wrapper
       heartbeat.sh
         Proactive daily trigger
     Supporting
@@ -373,7 +475,7 @@ mindmap
         User preferences
 ```
 
-## Data Flow
+### Data Flow
 
 ```mermaid
 flowchart LR
@@ -420,56 +522,8 @@ flowchart LR
     OUT -->|"TASK_APPEND:"| TASK_APPEND
 ```
 
-## What it does
-- Telegram text and voice input.
-- Local ASR via your own backend (HTTP endpoint or CLI).
-- Agent loop via Codex CLI (`codex exec --yolo`).
-- Local TTS backend -> Opus OGG -> Telegram `sendVoice`.
-- Persistent state in SQLite + human-readable markdown files.
-- Daily logs and optional proactive heartbeat.
-- Optional local dashboard on `http://localhost:8080`.
-
-## Repo layout
-```
-agent.sh          # Main loop - webhook or poll, context building, Codex orchestration
-asr.sh            # Voice note transcription (HTTP or CLI backend)
-tts_to_voice.sh   # Text-to-voice conversion with Opus encoding
-send_telegram.sh  # Telegram API wrapper (sendMessage/sendVoice)
-heartbeat.sh      # Proactive daily turn trigger
-webhook_server.py # Webhook receiver (secret token, flock, FIFO signal)
-webhook_ctl.sh    # Register/unregister/status for Telegram webhook
-dashboard.py      # Web UI showing last 50 turns
-lib/common.sh     # Shared helpers (env, SQLite, logging)
-Makefile          # Service lifecycle: make install/start/stop/restart/status/logs
-SOUL.md           # System prompt / personality
-USER.md           # User preferences
-MEMORY.md         # Append-only memory facts
-TASKS/pending.md  # Task list
-```
-
-## Requirements
-- Bash 5+
-- `curl`, `jq`, `ffmpeg`, `sqlite3`
-- `codex` CLI in `PATH`
-- A working ASR backend
-- A working TTS backend
-- `cloudflared` (for webhook mode with Cloudflare Tunnel)
-
-Recommended backends:
-- ASR: https://github.com/lsj5031/GlmAsrDocker
-- TTS: https://github.com/lsj5031/kitten-tts-rs
-
-## Quick start
-```bash
-git clone https://github.com/lsj5031/MinusculeClaw.git
-cd MinusculeClaw
-./setup.sh            # interactive: sets .env, inits DB
-make install           # installs systemd units, enables linger
-make webhook-register  # registers Telegram webhook
-make start             # starts agent + webhook server + tunnel
-```
-
 ## Environment contract
+
 Copy `.env.example` to `.env`, then set at minimum:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
@@ -488,9 +542,13 @@ MinusculeClaw passes:
 For backend-specific install/runtime flags, use the backend repos above.
 
 ## Codex output contract
+
 MinusculeClaw expects strict markers in Codex output:
 - `TELEGRAM_REPLY: ...` (required)
 - `VOICE_REPLY: ...` (optional)
+- `SEND_PHOTO: <absolute path>` (optional)
+- `SEND_DOCUMENT: <absolute path>` (optional)
+- `SEND_VIDEO: <absolute path>` (optional)
 - `MEMORY_APPEND: ...` (optional)
 - `TASK_APPEND: ...` (optional)
 
@@ -499,6 +557,7 @@ If markers are missing, MinusculeClaw sends a safe fallback text reply and logs 
 ## Ingress modes
 
 ### Webhook mode (recommended, `WEBHOOK_MODE=on`)
+
 Telegram pushes updates via webhook → cloudflared tunnel → `webhook_server.py` → JSONL queue.
 The agent sleeps on a FIFO pipe and wakes instantly when new data arrives (zero-CPU idle).
 
@@ -508,9 +567,11 @@ The agent sleeps on a FIFO pipe and wakes instantly when new data arrives (zero-
 - Register/unregister with `./webhook_ctl.sh register|unregister|status`
 
 ### Poll mode (fallback, `WEBHOOK_MODE=off`)
+
 Agent calls `getUpdates` every `POLL_INTERVAL_SECONDS` (default 2s). No extra services needed.
 
 ## Makefile
+
 ```bash
 make help              # show all targets
 make install           # install systemd units + enable linger
@@ -525,6 +586,7 @@ make test              # smoke test via --inject-text
 ```
 
 ## systemd services
+
 | Unit | Description |
 |------|-------------|
 | `minusculeclaw.service` | Main agent loop (webhook or poll) |
@@ -541,18 +603,22 @@ sudo loginctl enable-linger $USER   # services survive logout & start on boot
 ```
 
 ## Dashboard
+
 ```bash
 ./dashboard.py
 # open http://localhost:8080
 ```
 
 ## Runtime visibility
-- `agent.sh` now prints startup and periodic idle status logs by default.
+
+- `agent.sh` prints startup and periodic idle status logs by default.
 - Set `AGENT_LOG_LEVEL=debug` in `.env` for detailed polling/update traces.
 - If `.env` still has placeholder `replace_me` values for Telegram, startup exits with a clear error.
 
 ## Safety note
+
 Default mode uses `EXEC_POLICY=yolo` (`codex exec --yolo`), which allows unrestricted command execution by Codex. Use with caution on trusted machines.
 
 ## License
+
 MIT

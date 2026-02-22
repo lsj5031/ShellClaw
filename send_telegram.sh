@@ -15,6 +15,8 @@ mode=""
 msg=""
 file_path=""
 caption=""
+edit_msg_id=""
+return_id=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,6 +49,18 @@ while [[ $# -gt 0 ]]; do
       caption="$2"
       shift 2
       ;;
+    --edit)
+      edit_msg_id="$2"
+      shift 2
+      ;;
+    --return-id)
+      return_id="true"
+      shift
+      ;;
+    --typing)
+      mode="typing"
+      shift
+      ;;
     *)
       echo "unknown arg: $1" >&2
       exit 1
@@ -74,10 +88,28 @@ send_file() {
 
 case "$mode" in
   text)
-    curl -fsS "$api_base/sendMessage" \
+    if [[ -n "$edit_msg_id" ]]; then
+      curl -fsS "$api_base/editMessageText" \
+        -d "chat_id=$TELEGRAM_CHAT_ID" \
+        -d "message_id=$edit_msg_id" \
+        --data-urlencode "text=$msg" \
+        -d "disable_web_page_preview=true" >/dev/null
+    elif [[ "$return_id" == "true" ]]; then
+      curl -fsS "$api_base/sendMessage" \
+        -d "chat_id=$TELEGRAM_CHAT_ID" \
+        --data-urlencode "text=$msg" \
+        -d "disable_web_page_preview=true" | jq -r '.result.message_id'
+    else
+      curl -fsS "$api_base/sendMessage" \
+        -d "chat_id=$TELEGRAM_CHAT_ID" \
+        --data-urlencode "text=$msg" \
+        -d "disable_web_page_preview=true" >/dev/null
+    fi
+    ;;
+  typing)
+    curl -fsS "$api_base/sendChatAction" \
       -d "chat_id=$TELEGRAM_CHAT_ID" \
-      --data-urlencode "text=$msg" \
-      -d "disable_web_page_preview=true" >/dev/null
+      -d "action=typing" >/dev/null
     ;;
   voice)    send_file "sendVoice" "voice" ;;
   photo)    send_file "sendPhoto" "photo" ;;

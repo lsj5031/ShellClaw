@@ -117,6 +117,93 @@ safe_send_voice() {
   return 1
 }
 
+send_or_edit_text() {
+  local msg_id="$1"
+  local text="$2"
+  if [[ -z "$(trim "$text")" ]]; then
+    return 0
+  fi
+  local max=4096
+  if (( ${#text} <= max )); then
+    if [[ -n "$msg_id" ]] && "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$text" 2>/dev/null; then
+      return 0
+    fi
+    "$ROOT_DIR/send_telegram.sh" --text "$text"
+    return 0
+  fi
+  # Long message: edit progress with first chunk, send rest as new messages
+  local offset=0 first="true"
+  while (( offset < ${#text} )); do
+    local chunk="${text:offset:max}"
+    if [[ "$first" == "true" && -n "$msg_id" ]]; then
+      "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$chunk" 2>/dev/null \
+        || "$ROOT_DIR/send_telegram.sh" --text "$chunk"
+      first="false"
+    else
+      "$ROOT_DIR/send_telegram.sh" --text "$chunk"
+    fi
+    offset=$((offset + max))
+  done
+}
+
+codex_stream_monitor() {
+  local msg_id="$1"
+  local last_edit_ts=0
+  local status_log=""
+  while IFS= read -r line; do
+    local etype status_text=""
+    etype="$(jq -r '.type // empty' <<< "$line" 2>/dev/null)" || continue
+    case "$etype" in
+      turn.started) status_text="⚡ Processing…" ;;
+      item.started)
+        local itype
+        itype="$(jq -r '.item.type // empty' <<< "$line" 2>/dev/null)"
+        case "$itype" in
+          command_execution)
+            local icmd
+            icmd="$(jq -r '.item.command // empty' <<< "$line" 2>/dev/null)"
+            status_text="🔧 ${icmd:0:120}" ;;
+          reasoning) status_text="🤔 Reasoning…" ;;
+        esac ;;
+      item.completed)
+        local itype
+        itype="$(jq -r '.item.type // empty' <<< "$line" 2>/dev/null)"
+        case "$itype" in
+          file_change)
+            local fp
+            fp="$(jq -r '.item.file_path // empty' <<< "$line" 2>/dev/null)"
+            status_text="📝 Edited: ${fp}" ;;
+        esac ;;
+    esac
+    if [[ -n "$status_text" ]]; then
+      if [[ -n "$status_log" ]]; then
+        status_log="${status_log}
+${status_text}"
+      else
+        status_log="$status_text"
+      fi
+      local now
+      now="$(date +%s)"
+      if (( now - last_edit_ts >= 3 )); then
+        local edit_text="$status_log"
+        if (( ${#edit_text} > 4000 )); then
+          edit_text="…${edit_text: -3900}"
+        fi
+        "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" 2>/dev/null || true
+        "$ROOT_DIR/send_telegram.sh" --typing 2>/dev/null || true
+        last_edit_ts=$now
+      fi
+    fi
+  done
+  if [[ -n "$status_log" ]]; then
+    local edit_text="$status_log"
+    if (( ${#edit_text} > 4000 )); then
+      edit_text="…${edit_text: -3900}"
+    fi
+    "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" 2>/dev/null || true
+  fi
+}
+
 append_memory_and_tasks() {
   local codex_output="$1"
   local ts
@@ -217,6 +304,7 @@ build_context_file() {
 
 run_codex() {
   local context_file="$1"
+  local progress_msg_id="${2:-}"
   local out_file
   out_file="$ROOT_DIR/tmp/codex_last_$(date +%s%N).txt"
   local -a cmd
@@ -241,11 +329,20 @@ run_codex() {
     cmd+=(--model "$CODEX_MODEL")
   fi
 
-  local cli_out=""
-  set +e
-  cli_out="$("${cmd[@]}" < "$context_file" 2>&1)"
-  local rc=$?
-  set -e
+  local cli_out="" rc=0
+
+  if [[ -n "$progress_msg_id" ]]; then
+    cmd+=(--json)
+    set +e
+    "${cmd[@]}" < "$context_file" 2>/dev/null | codex_stream_monitor "$progress_msg_id"
+    rc=${PIPESTATUS[0]}
+    set -e
+  else
+    set +e
+    cli_out="$("${cmd[@]}" < "$context_file" 2>&1)"
+    rc=$?
+    set -e
+  fi
 
   local final_msg=""
   if [[ -f "$out_file" ]]; then
@@ -293,10 +390,14 @@ handle_user_message() {
   context_file="$ROOT_DIR/tmp/context_$(date +%s%N).md"
   build_context_file "$input_type" "$user_text" "$asr_text" "$context_file" "$attachment_type" "$attachment_path"
 
+  local progress_msg_id=""
+  progress_msg_id="$("$ROOT_DIR/send_telegram.sh" --text "⏳ Thinking…" --return-id 2>/dev/null)" || true
+  "$ROOT_DIR/send_telegram.sh" --typing 2>/dev/null || true
+
   local codex_output=""
   local codex_status="ok"
   set +e
-  codex_output="$(run_codex "$context_file" 2>&1)"
+  codex_output="$(run_codex "$context_file" "$progress_msg_id" 2>&1)"
   local codex_rc=$?
   set -e
   rm -f "$context_file"
@@ -329,15 +430,23 @@ handle_user_message() {
     if [[ -z "$spoken_text" ]]; then
       spoken_text="$telegram_reply"
     fi
-    if ! safe_send_voice "$spoken_text"; then
-      safe_send_text "$telegram_reply"
+    if safe_send_voice "$spoken_text"; then
+      if [[ -n "$progress_msg_id" ]]; then
+        "$ROOT_DIR/send_telegram.sh" --edit "$progress_msg_id" --text "${telegram_reply:-🔊}" 2>/dev/null || true
+      fi
+    else
+      send_or_edit_text "$progress_msg_id" "$telegram_reply"
     fi
   else
     if [[ -n "$telegram_reply" ]]; then
-      safe_send_text "$telegram_reply"
+      send_or_edit_text "$progress_msg_id" "$telegram_reply"
     elif [[ -n "$voice_reply" ]]; then
-      if ! safe_send_voice "$voice_reply"; then
-        safe_send_text "Voice output failed locally; please retry."
+      if safe_send_voice "$voice_reply"; then
+        if [[ -n "$progress_msg_id" ]]; then
+          "$ROOT_DIR/send_telegram.sh" --edit "$progress_msg_id" --text "🔊" 2>/dev/null || true
+        fi
+      else
+        send_or_edit_text "$progress_msg_id" "Voice output failed locally; please retry."
       fi
     fi
   fi
