@@ -132,7 +132,7 @@ append_memory_and_tasks() {
   if [[ -n "$(trim "$task_lines")" ]]; then
     while IFS= read -r line; do
       [[ -z "$(trim "$line")" ]] && continue
-      printf -- "- [ ] %s\n" "$line" >> "$ROOT_DIR/TASKS/pending.md"
+      ( flock 9; printf -- "- [ ] %s\n" "$line" >> "$ROOT_DIR/TASKS/pending.md" ) 9>"$ROOT_DIR/TASKS/pending.md.lock"
       sqlite_exec "INSERT INTO tasks(ts, source, content, done) VALUES($(sql_quote "$ts"), $(sql_quote "codex"), $(sql_quote "$line"), 0);"
     done <<< "$task_lines"
   fi
@@ -155,6 +155,8 @@ build_context_file() {
   local user_text="$2"
   local asr_text="$3"
   local context_file="$4"
+  local attachment_type="${5:-}"
+  local attachment_path="${6:-}"
 
   {
     echo "# MinusculeClaw Runtime Context"
@@ -187,6 +189,11 @@ build_context_file() {
     echo "USER_TEXT: $user_text"
     if [[ -n "$(trim "$asr_text")" ]]; then
       echo "ASR_TEXT: $asr_text"
+    fi
+    if [[ -n "$attachment_type" && -n "$attachment_path" ]]; then
+      echo "ATTACHMENT_TYPE: $attachment_type"
+      echo "ATTACHMENT_PATH: $attachment_path"
+      echo "The user sent a $attachment_type. The file has been downloaded to the path above. You can access and analyze it using your tools."
     fi
     echo ""
     echo "## Output requirements"
@@ -269,13 +276,15 @@ handle_user_message() {
   local user_text="$2"
   local asr_text="$3"
   local chat_id="$4"
+  local attachment_type="${5:-}"
+  local attachment_path="${6:-}"
 
   local ts
   ts="$(iso_now)"
   log_info "processing input_type=$input_type chat_id=$chat_id"
   local context_file
   context_file="$ROOT_DIR/tmp/context_$(date +%s%N).md"
-  build_context_file "$input_type" "$user_text" "$asr_text" "$context_file"
+  build_context_file "$input_type" "$user_text" "$asr_text" "$context_file" "$attachment_type" "$attachment_path"
 
   local codex_output=""
   local codex_status="ok"
@@ -330,6 +339,10 @@ handle_user_message() {
   store_turn "$ts" "$chat_id" "$input_type" "$user_text" "$asr_text" "$codex_output" "$telegram_reply" "$voice_reply" "$codex_status"
   log_info "reply complete status=$codex_status"
 
+  if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
+    rm -f "$attachment_path"
+  fi
+
   local log_block
   log_block="$({
     echo "## $ts"
@@ -337,6 +350,9 @@ handle_user_message() {
     echo "- user_text: $user_text"
     if [[ -n "$(trim "$asr_text")" ]]; then
       echo "- asr_text: $asr_text"
+    fi
+    if [[ -n "$attachment_type" ]]; then
+      echo "- attachment_type: $attachment_type"
     fi
     echo "- telegram_reply: ${telegram_reply:-<none>}"
     echo "- voice_reply: ${voice_reply:-<none>}"
@@ -355,7 +371,7 @@ telegram_get_updates() {
     -d 'allowed_updates=["message"]'
 }
 
-download_voice_file() {
+download_telegram_file() {
   local file_id="$1"
   local out_path="$2"
   local file_resp file_path
@@ -390,7 +406,7 @@ process_update_obj() {
   if [[ -n "$voice_file_id" ]]; then
     input_type="voice"
     local voice_in="$ROOT_DIR/tmp/in_${update_id}.oga"
-    if download_voice_file "$voice_file_id" "$voice_in"; then
+    if download_telegram_file "$voice_file_id" "$voice_in"; then
       set +e
       asr_text="$("$ROOT_DIR/asr.sh" "$voice_in")"
       local asr_rc=$?
@@ -404,13 +420,64 @@ process_update_obj() {
     fi
   fi
 
+  # Detect file attachments (photo, document, video, video_note)
+  local attachment_type="" attachment_path=""
+  local photo_file_id
+  photo_file_id="$(jq -r '.message.photo[-1].file_id // empty' <<< "$obj")"
+  local doc_file_id doc_file_name
+  doc_file_id="$(jq -r '.message.document.file_id // empty' <<< "$obj")"
+  doc_file_name="$(jq -r '.message.document.file_name // "document"' <<< "$obj")"
+  local video_file_id
+  video_file_id="$(jq -r '.message.video.file_id // empty' <<< "$obj")"
+  local videonote_file_id
+  videonote_file_id="$(jq -r '.message.video_note.file_id // empty' <<< "$obj")"
+
+  if [[ -n "$photo_file_id" ]]; then
+    attachment_type="photo"
+    attachment_path="$ROOT_DIR/tmp/photo_${update_id}.jpg"
+    if ! download_telegram_file "$photo_file_id" "$attachment_path"; then
+      log_warn "failed to download photo for update_id=$update_id"
+      attachment_type="" attachment_path=""
+    else
+      input_type="photo"
+    fi
+  elif [[ -n "$doc_file_id" ]]; then
+    attachment_type="document"
+    local ext="${doc_file_name##*.}"
+    attachment_path="$ROOT_DIR/tmp/doc_${update_id}.${ext}"
+    if ! download_telegram_file "$doc_file_id" "$attachment_path"; then
+      log_warn "failed to download document for update_id=$update_id"
+      attachment_type="" attachment_path=""
+    else
+      input_type="document"
+    fi
+  elif [[ -n "$video_file_id" ]]; then
+    attachment_type="video"
+    attachment_path="$ROOT_DIR/tmp/video_${update_id}.mp4"
+    if ! download_telegram_file "$video_file_id" "$attachment_path"; then
+      log_warn "failed to download video for update_id=$update_id"
+      attachment_type="" attachment_path=""
+    else
+      input_type="video"
+    fi
+  elif [[ -n "$videonote_file_id" ]]; then
+    attachment_type="video_note"
+    attachment_path="$ROOT_DIR/tmp/videonote_${update_id}.mp4"
+    if ! download_telegram_file "$videonote_file_id" "$attachment_path"; then
+      log_warn "failed to download video_note for update_id=$update_id"
+      attachment_type="" attachment_path=""
+    else
+      input_type="video_note"
+    fi
+  fi
+
   if [[ -z "$(trim "$effective_text")" ]]; then
     effective_text="(empty message)"
   fi
 
   if [[ "$chat_id" == "$TELEGRAM_CHAT_ID" ]]; then
     log_debug "accepted update_id=$update_id for configured chat_id"
-    handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id"
+    handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id" "$attachment_type" "$attachment_path"
   else
     log_debug "ignored update_id=$update_id for unmatched chat_id=$chat_id"
   fi
@@ -499,11 +566,12 @@ main_loop() {
 
 usage() {
   cat <<USAGE
-usage: $0 [--once] [--inject-text <text>] [--chat-id <chat-id>]
+usage: $0 [--once] [--inject-text <text>] [--inject-file <path>] [--chat-id <chat-id>]
 USAGE
 }
 
 inject_text=""
+inject_file=""
 once="false"
 inject_chat_id=""
 
@@ -515,6 +583,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --inject-text)
       inject_text="$2"
+      shift 2
+      ;;
+    --inject-file)
+      inject_file="$2"
       shift 2
       ;;
     --chat-id)
@@ -535,11 +607,31 @@ done
 
 validate_runtime_requirements
 
-if [[ -n "$inject_text" ]]; then
+if [[ -n "$inject_text" || -n "$inject_file" ]]; then
   if [[ -z "$inject_chat_id" ]]; then
     inject_chat_id="$TELEGRAM_CHAT_ID"
   fi
-  handle_user_message "text" "$inject_text" "" "$inject_chat_id"
+  local_attach_type=""
+  local_attach_path=""
+  local_input_type="text"
+  if [[ -n "$inject_file" ]]; then
+    [[ "$inject_file" != /* ]] && inject_file="$ROOT_DIR/$inject_file"
+    if [[ ! -f "$inject_file" ]]; then
+      echo "inject file not found: $inject_file" >&2
+      exit 1
+    fi
+    local_attach_path="$inject_file"
+    case "${inject_file,,}" in
+      *.jpg|*.jpeg|*.png|*.gif|*.webp|*.bmp)
+        local_attach_type="photo"; local_input_type="photo" ;;
+      *.mp4|*.mkv|*.avi|*.mov|*.webm)
+        local_attach_type="video"; local_input_type="video" ;;
+      *)
+        local_attach_type="document"; local_input_type="document" ;;
+    esac
+  fi
+  : "${inject_text:=(empty message)}"
+  handle_user_message "$local_input_type" "$inject_text" "" "$inject_chat_id" "$local_attach_type" "$local_attach_path"
   exit 0
 fi
 
