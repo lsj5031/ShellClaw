@@ -2,6 +2,8 @@
 
 Bash-powered personal voice agent that runs locally and talks over Telegram.
 
+<img src="docs/images/minusculeclaw-avatar.jpg" alt="MinusculeClaw project avatar" width="280" />
+
 ## agent.sh Internals
 
 ```mermaid

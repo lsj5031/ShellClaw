@@ -20,6 +20,9 @@ State rules:
 Output contract for the wrapper:
 - Required first line: TELEGRAM_REPLY: <text>
 - Optional line: VOICE_REPLY: <text>
+- Optional line: SEND_PHOTO: <absolute file path>
+- Optional line: SEND_DOCUMENT: <absolute file path>
+- Optional line: SEND_VIDEO: <absolute file path>
 - Optional line: MEMORY_APPEND: <single memory line>
 - Optional line: TASK_APPEND: <single task line>
 - Output plain marker lines only, no markdown or code fences.

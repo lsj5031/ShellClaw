@@ -202,6 +202,9 @@ build_context_file() {
     echo "TELEGRAM_REPLY: <reply text>"
     echo "Optional additional lines:"
     echo "VOICE_REPLY: <spoken reply text>"
+    echo "SEND_PHOTO: <absolute file path>"
+    echo "SEND_DOCUMENT: <absolute file path>"
+    echo "SEND_VIDEO: <absolute file path>"
     echo "MEMORY_APPEND: <single memory line>"
     echo "TASK_APPEND: <single task line>"
     echo "Do not use markdown, code fences, or extra prefixes."
@@ -334,6 +337,25 @@ handle_user_message() {
       fi
     fi
   fi
+
+  # Send file attachments requested by Codex
+  local send_files_marker
+  for marker_pair in "SEND_PHOTO:photo" "SEND_DOCUMENT:document" "SEND_VIDEO:video"; do
+    local m_name="${marker_pair%%:*}"
+    local m_mode="${marker_pair##*:}"
+    send_files_marker="$(extract_all_markers "$m_name" "$codex_output" || true)"
+    if [[ -n "$(trim "$send_files_marker")" ]]; then
+      while IFS= read -r fpath; do
+        fpath="$(trim "$fpath")"
+        [[ -z "$fpath" ]] && continue
+        if [[ -f "$fpath" ]]; then
+          "$ROOT_DIR/send_telegram.sh" --"$m_mode" "$fpath" || log_warn "failed to send $m_mode: $fpath"
+        else
+          log_warn "SEND_${m_mode^^} path not found: $fpath"
+        fi
+      done <<< "$send_files_marker"
+    fi
+  done
 
   append_memory_and_tasks "$codex_output"
   store_turn "$ts" "$chat_id" "$input_type" "$user_text" "$asr_text" "$codex_output" "$telegram_reply" "$voice_reply" "$codex_status"
