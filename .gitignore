@@ -1,0 +1,12 @@
+.env
+state.db
+USER.md
+LOGS/*.md
+!LOGS/.gitkeep
+runtime/
+tmp/
+*.ogg
+*.wav
+__pycache__/
+
+.last_local_backup_path

@@ -1,0 +1,5 @@
+# Keep agent alive (every minute watchdog)
+* * * * * cd "$HOME/minusculeclaw" && pgrep -f "./agent.sh" >/dev/null || nohup ./agent.sh >> LOGS/cron-agent.log 2>&1 &
+
+# Daily heartbeat at 09:00 local time
+0 9 * * * cd "$HOME/minusculeclaw" && ./heartbeat.sh >> LOGS/cron-heartbeat.log 2>&1

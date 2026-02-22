@@ -1,0 +1,15 @@
+[Unit]
+Description=MinusculeClaw Telegram Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/minusculeclaw
+EnvironmentFile=%h/minusculeclaw/.env
+ExecStart=/usr/bin/env bash -lc 'cd %h/minusculeclaw && ./agent.sh'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

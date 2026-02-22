@@ -1,0 +1,8 @@
+[Unit]
+Description=MinusculeClaw Daily Heartbeat
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/minusculeclaw
+EnvironmentFile=%h/minusculeclaw/.env
+ExecStart=/usr/bin/env bash -lc 'cd %h/minusculeclaw && ./heartbeat.sh'
