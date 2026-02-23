@@ -533,6 +533,7 @@ handle_user_message() {
   local attachment_type="${5:-}"
   local attachment_path="${6:-}"
   local update_id="${7:-}"
+  local attachment_owned="${8:-false}"
 
   local ts
   ts="$(iso_now)"
@@ -559,17 +560,13 @@ handle_user_message() {
     cancel_inserted="$(store_turn "$ts" "$chat_id" "$input_type" "$user_text" "$asr_text" "" "" "" "cancelled" "$update_id")"
     if [[ "$cancel_inserted" != "1" ]]; then
       log_info "dedup skip for cancelled update_id=$update_id"
-      if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
-        rm -f "$attachment_path"
-      fi
+      cleanup_attachment_path "$attachment_path" "$attachment_owned"
       return 0
     fi
     local cancel_log
     cancel_log="$(printf "## %s\n- input_type: %s\n- user_text: %s\n- status: cancelled\n" "$ts" "$input_type" "$user_text")"
     append_daily_log "$cancel_log"
-    if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
-      rm -f "$attachment_path"
-    fi
+    cleanup_attachment_path "$attachment_path" "$attachment_owned"
     log_info "request cancelled by user"
     return 0
   fi
@@ -646,18 +643,14 @@ handle_user_message() {
   turn_inserted="$(store_turn "$ts" "$chat_id" "$input_type" "$user_text" "$asr_text" "$codex_output" "$telegram_reply" "$voice_reply" "$codex_status" "$update_id")"
   if [[ "$turn_inserted" != "1" ]]; then
     log_info "dedup skip for completed update_id=$update_id"
-    if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
-      rm -f "$attachment_path"
-    fi
+    cleanup_attachment_path "$attachment_path" "$attachment_owned"
     return 0
   fi
 
   append_memory_and_tasks "$codex_output"
   log_info "reply complete status=$codex_status"
 
-  if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
-    rm -f "$attachment_path"
-  fi
+  cleanup_attachment_path "$attachment_path" "$attachment_owned"
 
   local log_block
   log_block="$({
@@ -676,6 +669,17 @@ handle_user_message() {
     echo ""
   })"
   append_daily_log "$log_block"
+}
+
+cleanup_attachment_path() {
+  local attachment_path="$1"
+  local attachment_owned="${2:-false}"
+  if [[ "$attachment_owned" != "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$attachment_path" && -f "$attachment_path" ]]; then
+    rm -f "$attachment_path"
+  fi
 }
 
 telegram_get_updates() {
@@ -833,7 +837,7 @@ process_update_obj() {
   fi
 
   log_debug "accepted update_id=$update_id for configured chat_id"
-  handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id" "$attachment_type" "$attachment_path" "$turn_update_id"
+  handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id" "$attachment_type" "$attachment_path" "$turn_update_id" "true"
 
   set_kv "last_update_id" "$update_id"
 }
