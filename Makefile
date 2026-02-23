@@ -54,18 +54,18 @@ logs-tunnel: ## Follow tunnel logs
 # ── Webhook management ─────────────────────────────────────────────
 
 webhook-register: ## Register Telegram webhook
-	./webhook_ctl.sh register
+	./scripts/webhook_manage.sh register
 
 webhook-unregister: ## Unregister Telegram webhook (reverts to poll)
-	./webhook_ctl.sh unregister
+	./scripts/webhook_manage.sh unregister
 
 webhook-status: ## Show Telegram webhook info
-	./webhook_ctl.sh status
+	./scripts/webhook_manage.sh status
 
 # ── Dev ────────────────────────────────────────────────────────────
 
 lint: ## Shellcheck all scripts
-	shellcheck agent.sh asr.sh send_telegram.sh heartbeat.sh tts_to_voice.sh lib/common.sh
+	shellcheck agent.sh scripts/asr.sh scripts/telegram_api.sh scripts/heartbeat.sh scripts/tts.sh scripts/webhook_manage.sh scripts/setup.sh lib/common.sh
 
 test: ## Quick smoke test (inject text)
 	./agent.sh --inject-text "ping"

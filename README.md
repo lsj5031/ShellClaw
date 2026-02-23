@@ -8,7 +8,7 @@ Send a voice note → local ASR on your laptop → Codex CLI (with real file acc
 
 No servers. No heavy frameworks. No Docker-compose. Maximum privacy and hackability.
 
-<img src="ShellClaw.png" alt="ShellClaw project logo" width="560" />
+<img src="docs/images/ShellClaw.png" alt="ShellClaw project logo" width="560" />
 
 ## ✨ Why people love it
 
@@ -31,7 +31,7 @@ cd ShellClaw
 cp .env.example .env
 # Edit .env → add your TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 
-./setup.sh            # interactive: sets .env, inits DB
+./scripts/setup.sh            # interactive: sets .env, inits DB
 make install           # installs systemd units, enables linger
 make start             # starts agent (poll mode by default)
 
@@ -58,29 +58,32 @@ Then just send a voice note to your Telegram bot — done!
 ## How it works (high-level)
 
 1. Telegram voice/text → `agent.sh`
-2. Local ASR (`asr.sh`) → transcript
+2. Local ASR (`scripts/asr.sh`) → transcript
 3. Build rich context (`SOUL.md` + `USER.md` + `MEMORY.md` + `TASKS/pending.md` + recent history)
 4. `codex exec --json` with special marker contract + live Telegram progress updates
-5. Parse markers → reply via text or local TTS (`tts_to_voice.sh`)
+5. Parse markers → reply via text or local TTS (`scripts/tts.sh`)
 6. Auto-append to memory/tasks + log everything
 
 ## Repo layout
 
-```
-agent.sh          # Main loop - webhook or poll, context building, Codex orchestration
-asr.sh            # Voice note transcription (HTTP or CLI backend)
-tts_to_voice.sh   # Text-to-voice conversion with Opus encoding
-send_telegram.sh  # Telegram API wrapper (sendMessage/sendVoice/editMessageText)
-heartbeat.sh      # Proactive daily turn trigger
-webhook_server.py # Webhook receiver (secret token, flock, FIFO signal)
-webhook_ctl.sh    # Register/unregister/status for Telegram webhook
-dashboard.py      # Web UI showing last 50 turns
-lib/common.sh     # Shared helpers (env, SQLite, logging)
-Makefile          # Service lifecycle: make install/start/stop/restart/status/logs
-SOUL.md           # System prompt / personality
-USER.md           # User preferences
-MEMORY.md         # Append-only memory facts
-TASKS/pending.md  # Task list
+```text
+agent.sh                 # Main loop - webhook or poll, context building, Codex orchestration
+scripts/
+  asr.sh                 # Voice note transcription (HTTP or CLI backend)
+  tts.sh                 # Text-to-voice conversion with Opus encoding
+  telegram_api.sh        # Telegram API wrapper (sendMessage/sendVoice/editMessageText)
+  heartbeat.sh           # Proactive daily turn trigger
+  webhook_manage.sh      # Register/unregister/status for Telegram webhook
+  setup.sh               # Interactive bootstrap/migration script
+services/
+  webhook_server.py      # Webhook receiver (secret token, flock, FIFO signal)
+  dashboard.py           # Web UI showing last 50 turns
+lib/common.sh            # Shared helpers (env, SQLite, logging)
+Makefile                 # Service lifecycle: make install/start/stop/restart/status/logs
+SOUL.md                  # System prompt / personality
+USER.md                  # User preferences
+MEMORY.md                # Append-only memory facts
+TASKS/pending.md         # Task list
 ```
 
 ## Requirements
@@ -139,7 +142,7 @@ flowchart TB
         MSG_TEXT[Extract message.text/caption]
         VOICE_ID[Extract voice.file_id]
         DOWNLOAD[download_voice_file]
-        ASR_CALL[asr.sh transcribe]
+        ASR_CALL[scripts/asr.sh transcribe]
         HANDLE[handle_user_message]
         
         EXTRACT --> CHECK_CHAT
@@ -330,17 +333,17 @@ flowchart TB
             direction TB
             subgraph webhook_path["Webhook Mode (default)"]
                 CF[cloudflared tunnel]
-                WH[webhook_server.py<br/>secret token + flock]
+                WH[services/webhook_server.py<br/>secret token + flock]
                 FIFO([FIFO notify pipe])
             end
             POLL[Long Polling<br/>getUpdates<br/>fallback mode]
         end
 
         subgraph Processing
-            ASR[asr.sh<br/>Voice → Text]
+            ASR[scripts/asr.sh<br/>Voice → Text]
             CTX[Context Builder<br/>SOUL + USER + MEMORY]
             CODEX[Codex CLI<br/>AI Agent]
-            TTS[tts_to_voice.sh<br/>Text → Voice]
+            TTS[scripts/tts.sh<br/>Text → Voice]
         end
 
         subgraph Storage
@@ -373,9 +376,9 @@ flowchart TB
 sequenceDiagram
     participant T as Telegram
     participant A as agent.sh
-    participant ASR as asr.sh
+    participant ASR as scripts/asr.sh
     participant C as Codex CLI
-    participant TTS as tts_to_voice.sh
+    participant TTS as scripts/tts.sh
     participant DB as SQLite
 
     T->>A: Voice message / Text
@@ -423,34 +426,34 @@ mindmap
         Context building
         Marker parsing
         Live progress streaming
-      asr.sh
+      scripts/asr.sh
         Voice transcription
         ffmpeg preprocessing
         HTTP or CLI backend
-      tts_to_voice.sh
+      scripts/tts.sh
         Text chunking
         TTS synthesis
         Opus encoding
-      send_telegram.sh
+      scripts/telegram_api.sh
         sendMessage wrapper
         sendVoice wrapper
         editMessageText wrapper
-      heartbeat.sh
+      scripts/heartbeat.sh
         Proactive daily trigger
     Supporting
       lib/common.sh
         Env loading
         SQLite helpers
         Logging utilities
-      webhook_server.py
+      services/webhook_server.py
         HTTP POST receiver
         Secret token verification
         FIFO notification
         JSONL queue writer
-      webhook_ctl.sh
+      scripts/webhook_manage.sh
         Register/unregister webhook
         Webhook status
-      dashboard.py
+      services/dashboard.py
         Web UI for turns
       Makefile
         Service lifecycle
@@ -553,13 +556,13 @@ If markers are missing, ShellClaw sends a safe fallback text reply and logs `par
 
 ### Webhook mode (recommended, `WEBHOOK_MODE=on`)
 
-Telegram pushes updates via webhook → cloudflared tunnel → `webhook_server.py` → JSONL queue.
+Telegram pushes updates via webhook → cloudflared tunnel → `services/webhook_server.py` → JSONL queue.
 The agent sleeps on a FIFO pipe and wakes instantly when new data arrives (zero-CPU idle).
 
 - `WEBHOOK_PUBLIC_URL` — your tunnel domain (e.g. `https://claw.liu.nz`)
 - `WEBHOOK_SECRET` — secret token verified via `X-Telegram-Bot-Api-Secret-Token` header
 - Queue writes are `flock`-protected against reader/writer races
-- Register/unregister with `./webhook_ctl.sh register|unregister|status`
+- Register/unregister with `./scripts/webhook_manage.sh register|unregister|status`
 
 ### Poll mode (fallback, `WEBHOOK_MODE=off`)
 
@@ -600,7 +603,7 @@ sudo loginctl enable-linger $USER   # services survive logout & start on boot
 ## Dashboard
 
 ```bash
-./dashboard.py
+./services/dashboard.py
 # open http://localhost:8080
 ```
 

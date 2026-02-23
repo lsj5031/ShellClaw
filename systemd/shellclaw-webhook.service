@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/shellclaw
 EnvironmentFile=%h/shellclaw/.env
-ExecStart=/usr/bin/python3 %h/shellclaw/webhook_server.py
+ExecStart=/usr/bin/python3 %h/shellclaw/services/webhook_server.py
 Restart=always
 RestartSec=3
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$ROOT_DIR"
 
@@ -53,7 +53,7 @@ else
   echo "warning: neither kitten-tts nor kitten-tts-rs found in PATH"
 fi
 
-mkdir -p TASKS LOGS config sql systemd cron runtime tmp
+mkdir -p TASKS LOGS config sql systemd cron runtime tmp scripts services
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
@@ -158,10 +158,19 @@ if command -v kitten-say >/dev/null 2>&1; then
 fi
 
 if [[ "${WEBHOOK_MODE:-off}" == "on" && -n "${WEBHOOK_PUBLIC_URL:-}" ]]; then
-  ./webhook_ctl.sh register || true
+  ./scripts/webhook_manage.sh register || true
 fi
 
-chmod +x agent.sh asr.sh tts_to_voice.sh send_telegram.sh heartbeat.sh setup.sh dashboard.py webhook_server.py webhook_ctl.sh
+chmod +x \
+  agent.sh \
+  scripts/asr.sh \
+  scripts/tts.sh \
+  scripts/telegram_api.sh \
+  scripts/heartbeat.sh \
+  scripts/setup.sh \
+  scripts/webhook_manage.sh \
+  services/dashboard.py \
+  services/webhook_server.py
 
 cat <<'MSG'
 
@@ -181,7 +190,7 @@ Useful commands:
   make restart           # restart everything
 
 Dashboard:
-  ./dashboard.py         # open http://localhost:8080
+  ./services/dashboard.py         # open http://localhost:8080
 
 ShellClaw is now purring on Telegram.
 MSG

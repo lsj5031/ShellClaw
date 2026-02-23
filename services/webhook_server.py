@@ -6,7 +6,7 @@ import signal
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib import parse, request
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QUEUE_PATH = os.path.join(ROOT_DIR, "runtime", "webhook_updates.jsonl")
 LOCK_PATH = os.path.join(ROOT_DIR, "runtime", "webhook_queue.lock")
 FIFO_PATH = os.path.join(ROOT_DIR, "runtime", "webhook_notify.fifo")

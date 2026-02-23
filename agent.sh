@@ -110,7 +110,7 @@ safe_send_text() {
   if [[ -z "$(trim "$msg")" ]]; then
     return 0
   fi
-  "$ROOT_DIR/send_telegram.sh" --text "$msg"
+  "$ROOT_DIR/scripts/telegram_api.sh" --text "$msg"
 }
 
 safe_send_voice() {
@@ -119,9 +119,9 @@ safe_send_voice() {
   local voice_file
   voice_file="$ROOT_DIR/tmp/reply_$(date +%s%N).ogg"
 
-  if "$ROOT_DIR/tts_to_voice.sh" "$text" "$voice_file" >/dev/null; then
+  if "$ROOT_DIR/scripts/tts.sh" "$text" "$voice_file" >/dev/null; then
     local -a send_cmd
-    send_cmd=("$ROOT_DIR/send_telegram.sh" --voice "$voice_file")
+    send_cmd=("$ROOT_DIR/scripts/telegram_api.sh" --voice "$voice_file")
     if [[ -n "$caption" ]]; then
       send_cmd+=(--caption "$caption")
     fi
@@ -146,14 +146,14 @@ send_or_edit_text() {
   fi
   # Remove inline keyboard if present
   if [[ -n "$msg_id" ]]; then
-    "$ROOT_DIR/send_telegram.sh" --remove-keyboard "$msg_id" 2>/dev/null || true
+    "$ROOT_DIR/scripts/telegram_api.sh" --remove-keyboard "$msg_id" 2>/dev/null || true
   fi
   local max=4096
   if (( ${#text} <= max )); then
-    if [[ -n "$msg_id" ]] && "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$text" 2>/dev/null; then
+    if [[ -n "$msg_id" ]] && "$ROOT_DIR/scripts/telegram_api.sh" --edit "$msg_id" --text "$text" 2>/dev/null; then
       return 0
     fi
-    "$ROOT_DIR/send_telegram.sh" --text "$text"
+    "$ROOT_DIR/scripts/telegram_api.sh" --text "$text"
     return 0
   fi
   # Long message: edit progress with first chunk, send rest as new messages
@@ -161,11 +161,11 @@ send_or_edit_text() {
   while (( offset < ${#text} )); do
     local chunk="${text:offset:max}"
     if [[ "$first" == "true" && -n "$msg_id" ]]; then
-      "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$chunk" 2>/dev/null \
-        || "$ROOT_DIR/send_telegram.sh" --text "$chunk"
+      "$ROOT_DIR/scripts/telegram_api.sh" --edit "$msg_id" --text "$chunk" 2>/dev/null \
+        || "$ROOT_DIR/scripts/telegram_api.sh" --text "$chunk"
       first="false"
     else
-      "$ROOT_DIR/send_telegram.sh" --text "$chunk"
+      "$ROOT_DIR/scripts/telegram_api.sh" --text "$chunk"
     fi
     offset=$((offset + max))
   done
@@ -214,8 +214,8 @@ ${status_text}"
         if (( ${#edit_text} > 4000 )); then
           edit_text="…${edit_text: -3900}"
         fi
-        "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" --with-cancel-btn 2>/dev/null || true
-        "$ROOT_DIR/send_telegram.sh" --typing 2>/dev/null || true
+        "$ROOT_DIR/scripts/telegram_api.sh" --edit "$msg_id" --text "$edit_text" --with-cancel-btn 2>/dev/null || true
+        "$ROOT_DIR/scripts/telegram_api.sh" --typing 2>/dev/null || true
         last_edit_ts=$now
       fi
     fi
@@ -225,7 +225,7 @@ ${status_text}"
     if (( ${#edit_text} > 4000 )); then
       edit_text="…${edit_text: -3900}"
     fi
-    "$ROOT_DIR/send_telegram.sh" --edit "$msg_id" --text "$edit_text" 2>/dev/null || true
+    "$ROOT_DIR/scripts/telegram_api.sh" --edit "$msg_id" --text "$edit_text" 2>/dev/null || true
   fi
 }
 
@@ -256,7 +256,7 @@ check_cancel_poll() {
 
   if [[ -n "$cancel_cb_id" ]]; then
     log_info "cancel button callback detected"
-    "$ROOT_DIR/send_telegram.sh" --answer-callback "$cancel_cb_id" 2>/dev/null || true
+    "$ROOT_DIR/scripts/telegram_api.sh" --answer-callback "$cancel_cb_id" 2>/dev/null || true
     touch "$CANCEL_FILE"
   elif [[ -n "$cancel_uid" ]]; then
     log_info "cancel command detected via poll (update_id=$cancel_uid)"
@@ -542,8 +542,8 @@ handle_user_message() {
   build_context_file "$input_type" "$user_text" "$asr_text" "$context_file" "$attachment_type" "$attachment_path"
 
   local progress_msg_id=""
-  progress_msg_id="$("$ROOT_DIR/send_telegram.sh" --text "⏳ Thinking…" --return-id --with-cancel-btn 2>/dev/null)" || true
-  "$ROOT_DIR/send_telegram.sh" --typing 2>/dev/null || true
+  progress_msg_id="$("$ROOT_DIR/scripts/telegram_api.sh" --text "⏳ Thinking…" --return-id --with-cancel-btn 2>/dev/null)" || true
+  "$ROOT_DIR/scripts/telegram_api.sh" --typing 2>/dev/null || true
 
   local codex_output=""
   local codex_status="ok"
@@ -634,7 +634,7 @@ handle_user_message() {
         fpath="$(trim "$fpath")"
         [[ -z "$fpath" ]] && continue
         if [[ -f "$fpath" ]]; then
-          "$ROOT_DIR/send_telegram.sh" --"$m_mode" "$fpath" || log_warn "failed to send $m_mode: $fpath"
+          "$ROOT_DIR/scripts/telegram_api.sh" --"$m_mode" "$fpath" || log_warn "failed to send $m_mode: $fpath"
         else
           log_warn "SEND_${m_mode^^} path not found: $fpath"
         fi
@@ -761,7 +761,7 @@ process_update_obj() {
     local voice_in="$ROOT_DIR/tmp/in_${update_id}.oga"
     if download_telegram_file "$voice_file_id" "$voice_in"; then
       set +e
-      asr_text="$("$ROOT_DIR/asr.sh" "$voice_in")"
+      asr_text="$("$ROOT_DIR/scripts/asr.sh" "$voice_in")"
       local asr_rc=$?
       set -e
       rm -f "$voice_in"
@@ -997,7 +997,7 @@ webhook_loop() {
   drain_webhook_queue
 
   while true; do
-    # Block until webhook_server.py signals or 30s safety timeout
+    # Block until services/webhook_server.py signals or 30s safety timeout
     read -r -t 30 -n 1 <&3 || true
     drain_webhook_queue
   done

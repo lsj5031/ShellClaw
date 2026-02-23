@@ -5,4 +5,4 @@ Description=ShellClaw Daily Heartbeat
 Type=oneshot
 WorkingDirectory=%h/shellclaw
 EnvironmentFile=%h/shellclaw/.env
-ExecStart=/bin/bash -lc 'cd %h/shellclaw && ./heartbeat.sh'
+ExecStart=/bin/bash -lc 'cd %h/shellclaw && ./scripts/heartbeat.sh'
