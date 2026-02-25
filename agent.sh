@@ -59,6 +59,16 @@ ensure_db_migrations() {
   sqlite_exec "CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_update_id_unique ON turns(update_id);"
 }
 
+register_bot_commands() {
+  local commands='[
+    {"command":"fresh","description":"Clear context and start fresh"},
+    {"command":"cancel","description":"Cancel the current request"}
+  ]'
+  curl -fsS "$api_base/setMyCommands" \
+    --data-urlencode "commands=$commands" >/dev/null 2>&1 || \
+    log_warn "failed to register bot menu commands"
+}
+
 validate_runtime_requirements() {
   : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required in .env}"
   : "${TELEGRAM_CHAT_ID:?TELEGRAM_CHAT_ID is required in .env}"
@@ -86,6 +96,7 @@ validate_runtime_requirements() {
 
   api_base="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
   file_base="https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}"
+  register_bot_commands
   if [[ "$WEBHOOK_MODE" == "on" ]]; then
     log_info "ShellClaw ready (mode=webhook, exec_policy=$EXEC_POLICY)"
   else
@@ -316,6 +327,11 @@ recent_turns_snippet() {
 .separator "\n"
 SELECT ts || ' | in=' || COALESCE(REPLACE(user_text, char(10), ' '), '') || ' | out=' || COALESCE(REPLACE(COALESCE(telegram_reply, voice_reply), char(10), ' '), '')
 FROM turns
+WHERE status != 'boundary'
+  AND id > COALESCE(
+    (SELECT MAX(id) FROM turns WHERE user_text = '---CONTEXT_BOUNDARY---'),
+    0
+  )
 ORDER BY id DESC
 LIMIT 8;
 SQL
@@ -328,6 +344,8 @@ build_context_file() {
   local context_file="$4"
   local attachment_type="${5:-}"
   local attachment_path="${6:-}"
+  local reply_from="${7:-}"
+  local reply_text="${8:-}"
 
   {
     echo "# ShellClaw Runtime Context"
@@ -356,6 +374,13 @@ build_context_file() {
     echo "## Recent turns"
     recent_turns_snippet || true
     echo ""
+    if [[ -n "$(trim "$reply_text")" ]]; then
+      echo "## Quoted/replied-to message"
+      echo "REPLY_FROM: $reply_from"
+      echo "REPLY_TEXT: $reply_text"
+      echo "The user is replying to the above message. Use it as context for understanding their intent."
+      echo ""
+    fi
     echo "## Current user input"
     echo "USER_TEXT: $user_text"
     if [[ -n "$(trim "$asr_text")" ]]; then
@@ -534,13 +559,15 @@ handle_user_message() {
   local attachment_path="${6:-}"
   local update_id="${7:-}"
   local attachment_owned="${8:-false}"
+  local reply_from="${9:-}"
+  local reply_text="${10:-}"
 
   local ts
   ts="$(iso_now)"
   log_info "processing input_type=$input_type chat_id=$chat_id"
   local context_file
   context_file="$ROOT_DIR/tmp/context_$(date +%s%N).md"
-  build_context_file "$input_type" "$user_text" "$asr_text" "$context_file" "$attachment_type" "$attachment_path"
+  build_context_file "$input_type" "$user_text" "$asr_text" "$context_file" "$attachment_type" "$attachment_path" "$reply_from" "$reply_text"
 
   local progress_msg_id=""
   progress_msg_id="$("$ROOT_DIR/scripts/telegram_api.sh" --text "⏳ Thinking…" --return-id --with-cancel-btn 2>/dev/null)" || true
@@ -734,6 +761,23 @@ process_update_obj() {
 
   message_text="$(jq -r '.message.text // .message.caption // empty' <<< "$obj")"
 
+  # Extract reply/quoted message context
+  local reply_text=""
+  local reply_from=""
+  if jq -e '.message.reply_to_message' <<< "$obj" >/dev/null 2>&1; then
+    reply_text="$(jq -r '.message.reply_to_message.text // .message.reply_to_message.caption // empty' <<< "$obj")"
+    reply_from="$(jq -r '.message.reply_to_message.from.first_name // "someone"' <<< "$obj")"
+  fi
+
+  if [[ "$chat_id" == "$TELEGRAM_CHAT_ID" && "${message_text,,}" =~ ^/fresh$ ]]; then
+    log_info "ack /fresh update_id=$update_id – inserting context boundary"
+    sqlite3 "$SQLITE_DB_PATH" "INSERT INTO turns(ts, chat_id, input_type, user_text, codex_raw, telegram_reply, status, update_id)
+      VALUES ('$(iso_now)', '$(sql_quote "$chat_id")', 'system', '---CONTEXT_BOUNDARY---', '', '', 'boundary', '$(sql_quote "$update_id")');"
+    "$ROOT_DIR/scripts/telegram_api.sh" --text "🧹 Context cleared. Fresh start!" 2>/dev/null || true
+    set_kv "last_update_id" "$update_id"
+    return 0
+  fi
+
   if [[ "$chat_id" == "$TELEGRAM_CHAT_ID" && "${message_text,,}" =~ ^/cancel$ ]]; then
     log_info "ack /cancel update_id=$update_id"
     if [[ -f "$CODEX_PID_FILE" ]]; then
@@ -837,7 +881,7 @@ process_update_obj() {
   fi
 
   log_debug "accepted update_id=$update_id for configured chat_id"
-  handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id" "$attachment_type" "$attachment_path" "$turn_update_id" "true"
+  handle_user_message "$input_type" "$effective_text" "$asr_text" "$chat_id" "$attachment_type" "$attachment_path" "$turn_update_id" "true" "$reply_from" "$reply_text"
 
   set_kv "last_update_id" "$update_id"
 }

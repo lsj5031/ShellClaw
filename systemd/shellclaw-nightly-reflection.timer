@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ShellClaw nightly reflection daily
+
+[Timer]
+OnCalendar=*-*-* 22:30:00
+Persistent=true
+Unit=shellclaw-nightly-reflection.service
+
+[Install]
+WantedBy=timers.target

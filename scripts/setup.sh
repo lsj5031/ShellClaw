@@ -167,6 +167,7 @@ chmod +x \
   scripts/tts.sh \
   scripts/telegram_api.sh \
   scripts/heartbeat.sh \
+  scripts/nightly_reflection.sh \
   scripts/setup.sh \
   scripts/webhook_manage.sh \
   services/dashboard.py \

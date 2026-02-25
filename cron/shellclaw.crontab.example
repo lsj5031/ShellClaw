@@ -3,3 +3,6 @@
 
 # Daily heartbeat at 09:00 local time
 0 9 * * * cd "$HOME/shellclaw" && ./scripts/heartbeat.sh >> LOGS/cron-heartbeat.log 2>&1
+
+# Nightly reflection at 22:30 local time
+30 22 * * * cd "$HOME/shellclaw" && ./scripts/nightly_reflection.sh >> LOGS/cron-reflection.log 2>&1

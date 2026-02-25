@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-UNITS := shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.service shellclaw-heartbeat.timer
+UNITS := shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.service shellclaw-nightly-reflection.timer
 SYSTEMD_DIR := $(HOME)/.config/systemd/user
 
 .PHONY: help install uninstall start stop restart status logs logs-webhook logs-tunnel webhook-register webhook-unregister webhook-status lint test
@@ -27,10 +27,11 @@ start: ## Start all services
 	systemctl --user start shellclaw-tunnel.service
 	systemctl --user start shellclaw.service
 	systemctl --user start shellclaw-heartbeat.timer
+	systemctl --user start shellclaw-nightly-reflection.timer
 	@$(MAKE) --no-print-directory status
 
 stop: ## Stop all services
-	systemctl --user stop shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer 2>/dev/null || true
+	systemctl --user stop shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.timer 2>/dev/null || true
 
 restart: ## Restart all services
 	$(MAKE) --no-print-directory stop
@@ -51,6 +52,9 @@ logs-webhook: ## Follow webhook server logs
 logs-tunnel: ## Follow tunnel logs
 	journalctl --user -u shellclaw-tunnel.service -f
 
+logs-reflection: ## Follow nightly reflection logs
+	journalctl --user -u shellclaw-nightly-reflection.service -f
+
 # ── Webhook management ─────────────────────────────────────────────
 
 webhook-register: ## Register Telegram webhook
@@ -65,7 +69,7 @@ webhook-status: ## Show Telegram webhook info
 # ── Dev ────────────────────────────────────────────────────────────
 
 lint: ## Shellcheck all scripts
-	shellcheck agent.sh scripts/asr.sh scripts/telegram_api.sh scripts/heartbeat.sh scripts/tts.sh scripts/webhook_manage.sh scripts/setup.sh lib/common.sh
+	shellcheck agent.sh scripts/asr.sh scripts/telegram_api.sh scripts/heartbeat.sh scripts/nightly_reflection.sh scripts/tts.sh scripts/webhook_manage.sh scripts/setup.sh lib/common.sh
 
 test: ## Quick smoke test (inject text)
 	./agent.sh --inject-text "ping"

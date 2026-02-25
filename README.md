@@ -19,6 +19,7 @@ No servers. No heavy frameworks. No Docker-compose. Maximum privacy and hackabil
 - `/cancel` command to interrupt long-running requests mid-execution
 - Local web dashboard (`http://localhost:8080`)
 - Optional daily heartbeat (the bot can message you proactively)
+- Optional nightly reflection journal (auto-written to markdown)
 - Three safety modes: `strict` | `allowlist` | `yolo`
 - Works great in English and Chinese (and likely more)
 
@@ -52,7 +53,7 @@ Then just send a voice note to your Telegram bot — done!
 - Agent loop via Codex CLI (`codex exec`).
 - Local TTS backend → Opus OGG → Telegram `sendVoice`.
 - Persistent state in SQLite + human-readable markdown files.
-- Daily logs and optional proactive heartbeat.
+- Daily logs, proactive heartbeat, and nightly reflection journal.
 - Optional local dashboard on `http://localhost:8080`.
 
 ## How it works (high-level)
@@ -73,6 +74,7 @@ scripts/
   tts.sh                 # Text-to-voice conversion with Opus encoding
   telegram_api.sh        # Telegram API wrapper (sendMessage/sendVoice/editMessageText)
   heartbeat.sh           # Proactive daily turn trigger
+  nightly_reflection.sh  # Sleep-time reflection trigger + markdown journal append
   webhook_manage.sh      # Register/unregister/status for Telegram webhook
   setup.sh               # Interactive bootstrap/migration script
 services/
@@ -539,6 +541,10 @@ ShellClaw passes:
 
 For backend-specific install/runtime flags, use the backend repos above.
 
+Optional nightly reflection settings:
+- `NIGHTLY_REFLECTION_FILE` (default `./LOGS/nightly_reflection.md`)
+- `NIGHTLY_REFLECTION_SKIP_AGENT=on` for dry-run/template-only writes
+
 ## Codex output contract
 
 ShellClaw expects strict markers in Codex output:
@@ -576,7 +582,7 @@ make install           # install systemd units + enable linger
 make start / stop      # start/stop all services
 make restart           # restart all services
 make status            # show service status
-make logs              # follow agent logs (also: logs-webhook, logs-tunnel)
+make logs              # follow agent logs (also: logs-webhook, logs-tunnel, logs-reflection)
 make webhook-register  # register Telegram webhook
 make webhook-status    # check webhook info
 make lint              # shellcheck all scripts
@@ -591,12 +597,13 @@ make test              # smoke test via --inject-text
 | `shellclaw-webhook.service` | Webhook HTTP server on `:8787` |
 | `shellclaw-tunnel.service` | Cloudflare Tunnel (`cloudflared`) |
 | `shellclaw-heartbeat.timer` | Daily heartbeat at 09:00 |
+| `shellclaw-nightly-reflection.timer` | Daily reflection at 22:30 (local time) |
 
 Install all with `make install`, or manually:
 ```bash
 cp systemd/shellclaw* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer
+systemctl --user enable shellclaw.service shellclaw-webhook.service shellclaw-tunnel.service shellclaw-heartbeat.timer shellclaw-nightly-reflection.timer
 sudo loginctl enable-linger $USER   # services survive logout & start on boot
 ```
 

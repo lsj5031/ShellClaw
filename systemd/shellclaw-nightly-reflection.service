@@ -1,0 +1,8 @@
+[Unit]
+Description=ShellClaw Nightly Reflection
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/shellclaw
+EnvironmentFile=%h/shellclaw/.env
+ExecStart=/bin/bash -lc 'cd %h/shellclaw && ./scripts/nightly_reflection.sh'
