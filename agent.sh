@@ -781,7 +781,7 @@ process_update_obj() {
   if [[ "$chat_id" == "$TELEGRAM_CHAT_ID" && "${message_text,,}" =~ ^/fresh$ ]]; then
     log_info "ack /fresh update_id=$update_id – inserting context boundary"
     sqlite3 "$SQLITE_DB_PATH" "INSERT INTO turns(ts, chat_id, input_type, user_text, codex_raw, telegram_reply, status, update_id)
-      VALUES ('$(iso_now)', '$(sql_quote "$chat_id")', 'system', '---CONTEXT_BOUNDARY---', '', '', 'boundary', '$(sql_quote "$update_id")');"
+      VALUES($(sql_quote "$(iso_now)"), $(sql_quote "$chat_id"), 'system', '---CONTEXT_BOUNDARY---', '', '', 'boundary', $(sql_quote "$update_id"));"
     "$ROOT_DIR/scripts/telegram_api.sh" --text "🧹 Context cleared. Fresh start!" 2>/dev/null || true
     set_kv "last_update_id" "$update_id"
     return 0
