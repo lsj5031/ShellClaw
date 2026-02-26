@@ -2,7 +2,7 @@
 
 *A personal AI assistant that lives in Telegram and runs entirely on your machine.*
 
-Send a voice note → local ASR on your laptop → agent provider (`codex` or `pi`) with real file access + persistent Markdown memory → local TTS voice reply.
+Send a voice note → local ASR on your laptop → agent provider (`codex`, `pi`, or custom `script`) with real file access + persistent Markdown memory → local TTS voice reply.
 
 **Everything is stored in simple, human-readable `.md` files** you can literally `cat` or open in any editor.
 
@@ -136,6 +136,8 @@ mindmap
         Recent history
       AI Engine
         Codex CLI
+        pi provider
+        Custom scripts
         Real file access
     Output
       Text replies
@@ -198,7 +200,17 @@ Copy `.env.example` to `.env` and configure:
 
 ### Voice Configuration
 
-Choose one ASR method:
+ShellClaw calls script entrypoints so ASR/TTS can be swapped without changing `agent.sh`.
+
+```bash
+# ASR script contract: <audio_file> -> transcript on stdout
+ASR_SCRIPT=./scripts/asr.sh
+
+# TTS script contract: <text> <output_ogg>
+TTS_SCRIPT=./scripts/tts.sh
+```
+
+Inside `scripts/asr.sh`, choose one ASR method:
 ```bash
 # HTTP-based ASR
 ASR_URL=http://localhost:8080/transcribe
@@ -207,10 +219,23 @@ ASR_URL=http://localhost:8080/transcribe
 ASR_CMD_TEMPLATE="whisper --file AUDIO_INPUT --output-format txt"
 ```
 
-Configure TTS:
+Inside `scripts/tts.sh`, configure TTS:
 ```bash
 TTS_CMD_TEMPLATE="tts --text TEXT --output WAV_OUTPUT"
 ```
+
+### Agent Provider Configuration
+
+```bash
+# Built-ins
+AGENT_PROVIDER=codex   # or pi
+
+# Optional custom script provider
+AGENT_PROVIDER=script
+AGENT_CMD_TEMPLATE='my-agent-cli --mode text'
+```
+
+When `AGENT_PROVIDER=script`, ShellClaw sends runtime context on stdin and expects marker lines (`TELEGRAM_REPLY: ...`) on stdout.
 
 ---
 
@@ -325,6 +350,8 @@ ShellClaw's AI can respond with various output types:
 | `strict` | (none) | Require approval for all actions |
 
 ⚠️ **Default mode is `yolo`** — use on trusted machines only.
+
+Note: Safety modes apply to `AGENT_PROVIDER=codex` only. When using `pi` or `script` providers, safety is delegated to those providers.
 
 ---
 

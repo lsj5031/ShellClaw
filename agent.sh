@@ -31,6 +31,9 @@ require_cmd sqlite3
 : "${WEBHOOK_MODE:=off}"
 : "${ALLOWLIST_PATH:=./config/allowlist.txt}"
 : "${AGENT_LOG_LEVEL:=info}"
+: "${AGENT_CMD_TEMPLATE:=}"
+: "${ASR_SCRIPT:=./scripts/asr.sh}"
+: "${TTS_SCRIPT:=./scripts/tts.sh}"
 
 api_base=""
 file_base=""
@@ -85,6 +88,14 @@ register_bot_commands() {
     log_warn "failed to register bot menu commands"
 }
 
+resolve_root_path() {
+  local path_value="$1"
+  if [[ "$path_value" != /* ]]; then
+    path_value="$ROOT_DIR/$path_value"
+  fi
+  printf "%s\n" "$path_value"
+}
+
 validate_runtime_requirements() {
   : "${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required in .env}"
   : "${TELEGRAM_CHAT_ID:?TELEGRAM_CHAT_ID is required in .env}"
@@ -109,11 +120,36 @@ validate_runtime_requirements() {
         exit 1
       fi
       ;;
+    script)
+      if [[ -z "$(trim "$AGENT_CMD_TEMPLATE")" ]]; then
+        echo "AGENT_CMD_TEMPLATE is required when AGENT_PROVIDER=script" >&2
+        exit 1
+      fi
+      ;;
     *)
-      echo "invalid AGENT_PROVIDER: $AGENT_PROVIDER (expected codex or pi)" >&2
+      echo "invalid AGENT_PROVIDER: $AGENT_PROVIDER (expected codex, pi, or script)" >&2
       exit 1
       ;;
   esac
+
+  ASR_SCRIPT="$(resolve_root_path "$ASR_SCRIPT")"
+  TTS_SCRIPT="$(resolve_root_path "$TTS_SCRIPT")"
+  if [[ ! -f "$ASR_SCRIPT" ]]; then
+    echo "ASR_SCRIPT not found: $ASR_SCRIPT" >&2
+    exit 1
+  fi
+  if [[ ! -x "$ASR_SCRIPT" ]]; then
+    echo "ASR_SCRIPT is not executable: $ASR_SCRIPT" >&2
+    exit 1
+  fi
+  if [[ ! -f "$TTS_SCRIPT" ]]; then
+    echo "TTS_SCRIPT not found: $TTS_SCRIPT" >&2
+    exit 1
+  fi
+  if [[ ! -x "$TTS_SCRIPT" ]]; then
+    echo "TTS_SCRIPT is not executable: $TTS_SCRIPT" >&2
+    exit 1
+  fi
 
   if [[ "$ALLOWLIST_PATH" != /* ]]; then
     ALLOWLIST_PATH="$INSTANCE_DIR/$ALLOWLIST_PATH"
@@ -128,10 +164,12 @@ validate_runtime_requirements() {
       log_warn "CODEX_MODEL/CODEX_REASONING_EFFORT are ignored when AGENT_PROVIDER=pi"
     fi
     log_warn "EXEC_POLICY/ALLOWLIST_PATH are codex-only and not applied to AGENT_PROVIDER=pi"
+  elif [[ "$AGENT_PROVIDER" == "script" ]]; then
+    log_warn "EXEC_POLICY/ALLOWLIST_PATH and CODEX_/PI_ settings are not applied when AGENT_PROVIDER=script"
   fi
 
   ensure_dirs
-  find "$INSTANCE_DIR/tmp" -maxdepth 1 \( -name "context_*" -o -name "codex_last_*" -o -name "codex_pipe_*" -o -name "codex_stdout_*" -o -name "pi_pipe_*" -o -name "pi_stdout_*" -o -name "pi_stream_*" \) -mmin +30 -delete 2>/dev/null || true
+  find "$INSTANCE_DIR/tmp" -maxdepth 1 \( -name "context_*" -o -name "codex_last_*" -o -name "codex_pipe_*" -o -name "codex_stdout_*" -o -name "pi_pipe_*" -o -name "pi_stdout_*" -o -name "pi_stream_*" -o -name "agent_script_stdout_*" \) -mmin +30 -delete 2>/dev/null || true
   rm -f "$CANCEL_FILE" "$AGENT_PID_FILE" "$LEGACY_CODEX_PID_FILE"
   if [[ ! -f "$SQLITE_DB_PATH" ]]; then
     sqlite3 "$SQLITE_DB_PATH" < "$ROOT_DIR/sql/schema.sql"
@@ -174,7 +212,7 @@ safe_send_voice() {
   local voice_file
   voice_file="$INSTANCE_DIR/tmp/reply_$(date +%s%N).ogg"
 
-  if "$ROOT_DIR/scripts/tts.sh" "$text" "$voice_file" >/dev/null; then
+  if "$TTS_SCRIPT" "$text" "$voice_file" >/dev/null; then
     local -a send_cmd
     send_cmd=("$ROOT_DIR/scripts/telegram_api.sh" --voice "$voice_file")
     if [[ -n "$caption" ]]; then
@@ -780,6 +818,44 @@ run_pi() {
   return $rc
 }
 
+run_script_agent() {
+  local context_file="$1"
+  local progress_msg_id="${2:-}"
+
+  rm -f "$CANCEL_FILE" "$AGENT_PID_FILE" "$LEGACY_CODEX_PID_FILE"
+  local cli_out="" rc=0
+  local tmp_out="$INSTANCE_DIR/tmp/agent_script_stdout_$$.txt"
+
+  set +e
+  # shellcheck disable=SC2094
+  AGENT_CONTEXT_FILE="$context_file" AGENT_PROGRESS_MSG_ID="$progress_msg_id" bash -lc "$AGENT_CMD_TEMPLATE" < "$context_file" > "$tmp_out" 2>&1 &
+  local script_pid=$!
+  echo "$script_pid" > "$AGENT_PID_FILE"
+
+  cancel_watcher "script" "$script_pid" &
+  local watcher_pid=$!
+
+  wait "$script_pid" 2>/dev/null
+  rc=$?
+  set -e
+
+  kill "$watcher_pid" 2>/dev/null || true
+  wait "$watcher_pid" 2>/dev/null || true
+  cli_out="$(cat "$tmp_out" 2>/dev/null || true)"
+  rm -f "$tmp_out"
+  rm -f "$AGENT_PID_FILE"
+
+  if [[ -f "$CANCEL_FILE" ]]; then
+    rm -f "$CANCEL_FILE"
+    return 130
+  fi
+
+  if [[ -n "$(trim "$cli_out")" ]]; then
+    printf "%s\n" "$cli_out"
+  fi
+  return $rc
+}
+
 run_agent() {
   local context_file="$1"
   local progress_msg_id="${2:-}"
@@ -790,6 +866,9 @@ run_agent() {
       ;;
     pi)
       run_pi "$context_file" "$progress_msg_id"
+      ;;
+    script)
+      run_script_agent "$context_file" "$progress_msg_id"
       ;;
     *)
       echo "invalid AGENT_PROVIDER: $AGENT_PROVIDER" >&2
@@ -1105,7 +1184,7 @@ process_update_obj() {
     local voice_in="$INSTANCE_DIR/tmp/in_${update_id}.oga"
     if download_telegram_file "$voice_file_id" "$voice_in"; then
       set +e
-      asr_text="$("$ROOT_DIR/scripts/asr.sh" "$voice_in")"
+      asr_text="$("$ASR_SCRIPT" "$voice_in")"
       local asr_rc=$?
       set -e
       rm -f "$voice_in"
