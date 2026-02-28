@@ -84,6 +84,18 @@ EOF_ENV
   printf '%s\n' "$dir"
 }
 
+new_instance_without_parse_mode() {
+  local tmp_root="$1"
+  local name="$2"
+  local dir="$tmp_root/$name"
+  mkdir -p "$dir"
+  cat > "$dir/.env" <<'EOF_ENV'
+TELEGRAM_BOT_TOKEN=test_token
+TELEGRAM_CHAT_ID=123456
+EOF_ENV
+  printf '%s\n' "$dir"
+}
+
 first_call_log() {
   local log_file="$1"
   awk '
@@ -197,6 +209,50 @@ run_test_off_mode_plain_text() {
   assert_contains "$first" 'text=Need (a+b)=1.0! #tag [x] {p|q}' "off mode should keep text unchanged"
 }
 
+run_test_default_mode_html() {
+  local tmp_root="$1"
+  local bin_dir="$tmp_root/bin"
+  setup_fake_bin "$bin_dir"
+
+  local instance_dir
+  instance_dir="$(new_instance_without_parse_mode "$tmp_root" "instance_default_html")"
+  local log_file="$tmp_root/curl_default_html.log"
+
+  TEST_CURL_LOG="$log_file" \
+  PATH="$bin_dir:$PATH" \
+  INSTANCE_DIR="$instance_dir" \
+    "$ROOT_DIR/scripts/telegram_api.sh" --text '<b>Hello</b>'
+
+  local first
+  first="$(first_call_log "$log_file")"
+
+  assert_contains "$first" "parse_mode=HTML" "Default mode should use HTML parse_mode"
+  assert_contains "$first" 'text=<b>Hello</b>' "Default HTML mode should send text unchanged"
+}
+
+run_test_default_mode_html_caption() {
+  local tmp_root="$1"
+  local bin_dir="$tmp_root/bin"
+  setup_fake_bin "$bin_dir"
+
+  local instance_dir
+  instance_dir="$(new_instance_without_parse_mode "$tmp_root" "instance_default_html_caption")"
+  local log_file="$tmp_root/curl_default_html_caption.log"
+  local sample_file="$tmp_root/sample.txt"
+  printf 'sample\n' > "$sample_file"
+
+  TEST_CURL_LOG="$log_file" \
+  PATH="$bin_dir:$PATH" \
+  INSTANCE_DIR="$instance_dir" \
+    "$ROOT_DIR/scripts/telegram_api.sh" --document "$sample_file" --caption '<b>Cap</b>'
+
+  local first
+  first="$(first_call_log "$log_file")"
+
+  assert_contains "$first" "parse_mode=HTML" "Default mode should apply HTML parse_mode for captions"
+  assert_contains "$first" 'caption=<b>Cap</b>' "Caption should be sent unchanged"
+}
+
 main() {
   local tmp_root
   tmp_root="$(mktemp -d)"
@@ -206,6 +262,8 @@ main() {
   run_test_markdownv2_keeps_valid_markdown "$tmp_root"
   run_test_retry_without_parse_mode "$tmp_root"
   run_test_off_mode_plain_text "$tmp_root"
+  run_test_default_mode_html "$tmp_root"
+  run_test_default_mode_html_caption "$tmp_root"
 
   echo "telegram_api tests passed"
 }

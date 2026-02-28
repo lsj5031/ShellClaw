@@ -564,7 +564,7 @@ build_context_file() {
     echo "SEND_VIDEO: <absolute file path>"
     echo "MEMORY_APPEND: <single memory line>"
     echo "TASK_APPEND: <single task line>"
-    case "${TELEGRAM_PARSE_MODE:-off}" in
+    case "${TELEGRAM_PARSE_MODE:-HTML}" in
       Markdown | MarkdownV2)
         echo "Use valid ${TELEGRAM_PARSE_MODE} formatting in TELEGRAM_REPLY when useful."
         echo "Keep formatting simple: no nested styles, no unmatched markers, and no marker breaks across lines."
@@ -572,8 +572,8 @@ build_context_file() {
         echo "Do not use code fences or extra prefixes."
         ;;
       HTML)
-        echo "Use valid Telegram HTML formatting in TELEGRAM_REPLY when useful."
-        echo "Do not use markdown, code fences, or extra prefixes."
+        echo "Use standard Markdown formatting in TELEGRAM_REPLY when useful (bold, italic, code, links, lists)."
+        echo "The runtime will convert Markdown to Telegram HTML automatically."
         ;;
       *)
         echo "Do not use markdown, code fences, or extra prefixes."
@@ -1042,6 +1042,9 @@ handle_user_message() {
   voice_reply="$(extract_marker "VOICE_REPLY" "$agent_output" || true)"
 
   telegram_reply="$(trim "$telegram_reply")"
+  if [[ -n "$telegram_reply" && "${TELEGRAM_PARSE_MODE:-HTML}" == "HTML" ]]; then
+    telegram_reply="$(printf '%s' "$telegram_reply" | "$ROOT_DIR/scripts/md_to_telegram_html.sh")"
+  fi
   voice_reply="$(trim "$voice_reply")"
 
   if [[ -z "$telegram_reply" && -z "$voice_reply" ]]; then

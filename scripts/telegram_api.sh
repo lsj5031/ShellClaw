@@ -86,11 +86,11 @@ done
 api_base="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
 
 cancel_keyboard='{"inline_keyboard":[[{"text":"Cancel","callback_data":"cancel"}]]}'
-telegram_parse_mode="${TELEGRAM_PARSE_MODE:-}"
+telegram_parse_mode="${TELEGRAM_PARSE_MODE:-HTML}"
 parse_mode_args=()
 
 case "$telegram_parse_mode" in
-  "" | off | OFF)
+  off | OFF)
     telegram_parse_mode=""
     ;;
   Markdown | MarkdownV2 | HTML)
@@ -229,6 +229,9 @@ send_file() {
   local -a cmd=(curl -fsS "$api_base/$method"
     -F "chat_id=$TELEGRAM_CHAT_ID"
     -F "$field=@$file_path")
+  if [[ -n "$telegram_parse_mode" ]]; then
+    cmd+=(-F "parse_mode=$telegram_parse_mode")
+  fi
   if [[ -n "$caption" ]]; then
     cmd+=(-F "caption=$caption")
   fi
