@@ -220,11 +220,26 @@ tmp_out="$INSTANCE_DIR/tmp/agent_out_$$.txt"
 trap 'rm -f "$tmp_stream" "$tmp_out"' EXIT
 
 rc=0
+agent_pid=""
+
+# Cleanup and kill background child process on signal/exit
+cleanup() {
+  local exit_code=$?
+  if [[ -n "$agent_pid" ]] && kill -0 "$agent_pid" 2>/dev/null; then
+    # Kill background agent process group or pid
+    kill -TERM "$agent_pid" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "$agent_pid" 2>/dev/null || true
+  fi
+  rm -f "$tmp_stream" "$tmp_out" "${pipe:-}"
+  exit "$exit_code"
+}
+trap cleanup EXIT INT TERM
+
 if [[ "$WRAPPER_STREAM" == "on" && -n "$progress_msg_id" ]]; then
   # ── Streaming mode: tee output to monitor + capture file ──
   pipe="$INSTANCE_DIR/tmp/agent_wrap_pipe_$$.fifo"
   mkfifo "$pipe"
-  trap 'rm -f "$tmp_stream" "$tmp_out" "$pipe"' EXIT
 
   set +e
   bash -lc "$WRAPPER_CMD_TEMPLATE" < "$context_file" > "$pipe" 2>/dev/null &
@@ -239,14 +254,19 @@ if [[ "$WRAPPER_STREAM" == "on" && -n "$progress_msg_id" ]]; then
 else
   # ── Non-streaming mode: capture stdout, discard stderr ──
   set +e
-  bash -lc "$WRAPPER_CMD_TEMPLATE" < "$context_file" > "$tmp_out" 2>/dev/null
+  bash -lc "$WRAPPER_CMD_TEMPLATE" < "$context_file" > "$tmp_out" 2>/dev/null &
+  agent_pid=$!
+  wait "$agent_pid" 2>/dev/null
   rc=$?
   set -e
   final_text="$(extract_final_text < "$tmp_out")"
 fi
 
 if [[ $rc -ne 0 ]]; then
-  echo "TELEGRAM_REPLY: Agent failed (exit $rc). Check logs."
+  if [[ -f "$INSTANCE_DIR/runtime/cancel" || -f "$ROOT_DIR/runtime/cancel" ]]; then
+    exit 130
+  fi
+  echo "TELEGRAM_REPLY: Agent failed, exit code $rc. Check logs."
   exit $rc
 fi
 

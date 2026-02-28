@@ -412,27 +412,66 @@ check_cancel_poll() {
   fi
 }
 
+list_child_pids() {
+  local parent_pid="$1"
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -P "$parent_pid" 2>/dev/null || true
+    return 0
+  fi
+  ps -o pid= --ppid "$parent_pid" 2>/dev/null || true
+}
+
+collect_descendant_pids() {
+  local parent_pid="$1"
+  local child_pid
+  while IFS= read -r child_pid; do
+    child_pid="$(trim "$child_pid")"
+    [[ -z "$child_pid" ]] && continue
+    printf "%s\n" "$child_pid"
+    collect_descendant_pids "$child_pid"
+  done < <(list_child_pids "$parent_pid")
+}
+
+signal_process_tree() {
+  local signal_name="$1"
+  local root_pid="$2"
+  local child_pid
+  local -a descendants=()
+
+  while IFS= read -r child_pid; do
+    child_pid="$(trim "$child_pid")"
+    [[ -z "$child_pid" ]] && continue
+    descendants+=("$child_pid")
+  done < <(collect_descendant_pids "$root_pid")
+
+  local i
+  for ((i=${#descendants[@]} - 1; i>=0; i--)); do
+    kill "-$signal_name" "${descendants[$i]}" 2>/dev/null || true
+  done
+  kill "-$signal_name" "$root_pid" 2>/dev/null || true
+}
+
 terminate_agent_process() {
   local provider="$1"
   local agent_pid="$2"
 
   case "$provider" in
     pi)
-      kill -INT "$agent_pid" 2>/dev/null || true
+      signal_process_tree "INT" "$agent_pid"
       sleep 2
       if kill -0 "$agent_pid" 2>/dev/null; then
-        kill -TERM "$agent_pid" 2>/dev/null || true
+        signal_process_tree "TERM" "$agent_pid"
       fi
       sleep 2
       if kill -0 "$agent_pid" 2>/dev/null; then
-        kill -KILL "$agent_pid" 2>/dev/null || true
+        signal_process_tree "KILL" "$agent_pid"
       fi
       ;;
     *)
-      kill -TERM "$agent_pid" 2>/dev/null || true
+      signal_process_tree "TERM" "$agent_pid"
       sleep 2
       if kill -0 "$agent_pid" 2>/dev/null; then
-        kill -KILL "$agent_pid" 2>/dev/null || true
+        signal_process_tree "KILL" "$agent_pid"
       fi
       ;;
   esac
