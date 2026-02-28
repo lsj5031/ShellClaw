@@ -286,6 +286,7 @@ safe_send_voice() {
 send_or_edit_text() {
   local msg_id="$1"
   local text="$2"
+  local raw_text="${3:-}"
   if [[ -z "$(trim "$text")" ]]; then
     return 0
   fi
@@ -301,6 +302,11 @@ send_or_edit_text() {
     "$ROOT_DIR/scripts/telegram_api.sh" --text "$text"
     return 0
   fi
+
+  if send_long_reply_as_file "$msg_id" "$raw_text" "$text"; then
+    return 0
+  fi
+
   # Long message: edit progress with first chunk, send rest as new messages
   local offset=0 first="true"
   while (( offset < ${#text} )); do
@@ -314,6 +320,59 @@ send_or_edit_text() {
     fi
     offset=$((offset + max))
   done
+}
+
+send_long_reply_as_file() {
+  local msg_id="$1"
+  local raw_text="${2:-}"
+  local fallback_text="${3:-}"
+  local source_text="$raw_text"
+
+  if [[ -z "$(trim "$source_text")" ]]; then
+    source_text="$fallback_text"
+  fi
+  source_text="$(trim "$source_text")"
+  if [[ -z "$source_text" ]]; then
+    return 1
+  fi
+
+  local base_path="$INSTANCE_DIR/tmp/reply_$(date +%s%N)"
+  local md_file="${base_path}.md"
+  local svg_file="${base_path}.svg"
+  local sent_mode=""
+
+  printf '%s\n' "$source_text" > "$md_file"
+
+  if command -v markie >/dev/null 2>&1; then
+    local markie_theme="${MARKIE_THEME:-everforest}"
+    if markie "$md_file" --output "$svg_file" --theme "$markie_theme" >/dev/null 2>&1 && [[ -s "$svg_file" ]]; then
+      if "$ROOT_DIR/scripts/telegram_api.sh" --document "$svg_file" >/dev/null 2>&1; then
+        sent_mode="svg"
+      else
+        log_warn "failed to send SVG document: $svg_file"
+      fi
+    else
+      log_warn "markie render failed for long reply; falling back to markdown document"
+    fi
+  fi
+
+  if [[ -z "$sent_mode" ]]; then
+    if "$ROOT_DIR/scripts/telegram_api.sh" --document "$md_file" >/dev/null 2>&1; then
+      sent_mode="md"
+    else
+      log_warn "failed to send markdown document: $md_file"
+    fi
+  fi
+
+  rm -f "$md_file" "$svg_file"
+
+  if [[ -z "$sent_mode" ]]; then
+    return 1
+  fi
+
+  # Brief notice omitted per user preference
+
+  return 0
 }
 
 codex_stream_monitor() {
@@ -1076,10 +1135,12 @@ handle_user_message() {
     agent_status="agent_error"
   fi
 
-  local telegram_reply voice_reply
-  telegram_reply="$(extract_marker "TELEGRAM_REPLY" "$agent_output" || true)"
+  local telegram_reply telegram_reply_raw voice_reply
+  telegram_reply_raw="$(extract_marker "TELEGRAM_REPLY" "$agent_output" || true)"
+  telegram_reply="$telegram_reply_raw"
   voice_reply="$(extract_marker "VOICE_REPLY" "$agent_output" || true)"
 
+  telegram_reply_raw="$(trim "$telegram_reply_raw")"
   telegram_reply="$(trim "$telegram_reply")"
   if [[ -n "$telegram_reply" && "${TELEGRAM_PARSE_MODE:-HTML}" == "HTML" ]]; then
     telegram_reply="$(printf '%s' "$telegram_reply" | "$ROOT_DIR/scripts/md_to_telegram_html.sh")"
@@ -1105,14 +1166,14 @@ handle_user_message() {
     fi
     if safe_send_voice "$spoken_text"; then
       if [[ -n "$progress_msg_id" ]]; then
-        send_or_edit_text "$progress_msg_id" "${telegram_reply:-🔊}"
+        send_or_edit_text "$progress_msg_id" "${telegram_reply:-🔊}" "$telegram_reply_raw"
       fi
     else
-      send_or_edit_text "$progress_msg_id" "$telegram_reply"
+      send_or_edit_text "$progress_msg_id" "$telegram_reply" "$telegram_reply_raw"
     fi
   else
     if [[ -n "$telegram_reply" ]]; then
-      send_or_edit_text "$progress_msg_id" "$telegram_reply"
+      send_or_edit_text "$progress_msg_id" "$telegram_reply" "$telegram_reply_raw"
     elif [[ -n "$voice_reply" ]]; then
       if safe_send_voice "$voice_reply"; then
         if [[ -n "$progress_msg_id" ]]; then
