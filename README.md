@@ -112,6 +112,10 @@ Unlike sandboxed cloud assistants, ShellClaw can actually read and write your lo
 
 See what ShellClaw is doing in real-time. Your Telegram message updates live as tasks progress.
 
+### Rich Text & Markdown Support
+
+ShellClaw automatically converts standard Markdown in your agent's responses into Telegram-compatible HTML. This means you get bold, italics, code blocks, and links without worrying about Telegram's specific formatting rules.
+
 ### Cancel Anytime
 
 Running a long task? Send `/cancel` to stop it immediately.
@@ -182,6 +186,7 @@ ShellClaw/
 │   ├── asr.sh            # Voice transcription
 │   ├── tts.sh            # Voice synthesis
 │   ├── telegram_api.sh   # Telegram API wrapper
+│   ├── md_to_telegram_html.sh # Markdown to HTML converter
 │   ├── heartbeat.sh      # Proactive daily message
 │   └── nightly_reflection.sh  # Daily journal
 ├── services/
@@ -204,9 +209,12 @@ Copy `.env.example` to `.env` and configure:
 |----------|----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Your Telegram bot token from @BotFather |
 | `TELEGRAM_CHAT_ID` | Yes | Your Telegram chat/user ID |
+| `AGENT_PROVIDER` | No | `codex` (default), `pi`, or `script` |
+| `TELEGRAM_PARSE_MODE`| No | Formatting: `HTML` (default), `Markdown`, or `off` |
 | `WEBHOOK_MODE` | No | `on` for webhook, `off` for polling (default: off) |
 | `EXEC_POLICY` | No | Safety mode: `strict`, `allowlist`, or `yolo` (default: yolo) |
 | `POLL_INTERVAL_SECONDS` | No | Seconds between polls (default: 2) |
+| `TIMEZONE` | No | Your local timezone (default: Pacific/Auckland) |
 
 ### Voice Configuration
 
