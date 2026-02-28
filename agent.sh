@@ -196,24 +196,58 @@ validate_runtime_requirements() {
 extract_marker() {
   local marker="$1"
   local payload="$2"
-  printf '%s\n' "$payload" | awk -v m="$marker" '
+  # Use awk to extract blocks of text starting with the marker until the next marker or end of input.
+  # It joins multiple blocks of the same marker with newlines.
+  printf -- '%s\n' "$payload" | awk -v m="$marker" '
     BEGIN {
-      marker_re = "^(TELEGRAM_REPLY|VOICE_REPLY|MEMORY_APPEND|TASK_APPEND|SEND_PHOTO|SEND_DOCUMENT|SEND_VIDEO):"
+      # Case-insensitive matching for the marker pattern
+      marker_pattern = "^[[:space:]]*" toupper(m) ":"
+      any_marker_re = "^[[:space:]]*(TELEGRAM_REPLY|VOICE_REPLY|MEMORY_APPEND|TASK_APPEND|SEND_PHOTO|SEND_DOCUMENT|SEND_VIDEO):"
+      IGNORECASE = 1
     }
-    found && $0 ~ marker_re { exit }
-    !found && index($0, m ":") == 1 {
-      sub("^" m ":[[:space:]]*", "", $0)
-      found = 1; buf = $0; next
+    # Match the target marker at the start of a line
+    $0 ~ marker_pattern {
+      line = $0
+      # Remove the marker and optional leading/trailing space from the current line
+      sub("^[[:space:]]*" m ":[[:space:]]*", "", line)
+      if (found) {
+        buf = buf "\n" line
+      } else {
+        buf = line
+        found = 1
+      }
+      collecting = 1
+      next
     }
-    found { buf = buf "\n" $0 }
-    END { if (found) print buf }
+    # If we hit a DIFFERENT marker, stop collecting for the current block
+    collecting && $0 ~ any_marker_re {
+      collecting = 0
+      next
+    }
+    # If we are in a collecting state, append the line
+    collecting {
+      buf = buf "\n" $0
+    }
+    END {
+      if (found) {
+        # Trim leading/trailing newlines that might have been added by multiple blocks or empty markers
+        gsub(/^\n+|\n+$/, "", buf)
+        print buf
+      }
+    }
   '
 }
 
 extract_all_markers() {
   local marker="$1"
   local payload="$2"
-  printf '%s\n' "$payload" | awk -v m="$marker" 'index($0, m ":") == 1 { sub("^" m ":[[:space:]]*", "", $0); print }'
+  printf -- '%s\n' "$payload" | awk -v m="$marker" '
+    BEGIN { IGNORECASE = 1 }
+    $0 ~ "^[[:space:]]*" m ":" {
+      sub("^[[:space:]]*" m ":[[:space:]]*", "", $0)
+      print
+    }
+  '
 }
 
 safe_send_text() {
