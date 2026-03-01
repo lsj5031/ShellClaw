@@ -21,6 +21,10 @@
 # ── Adapt the sections marked CUSTOMISE below ──────────────────────────────
 set -euo pipefail
 
+# Force UTF-8 locale for consistent string handling
+export LANG="${LANG:-C.UTF-8}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT_DIR/lib/common.sh"
@@ -29,8 +33,9 @@ load_env
 # ── CUSTOMISE: CLI command template ────────────────────────────────────────
 # Replace with your agent CLI invocation (evaluated via bash -lc).
 # Example: Gemini CLI in headless mode with streaming JSON output.
+# Force UTF-8 locale in the subshell to prevent double-encoding issues.
 # shellcheck disable=SC2016
-: "${WRAPPER_CMD_TEMPLATE:=gemini -p \"\" -o stream-json --yolo}"
+: "${WRAPPER_CMD_TEMPLATE:=LANG=C.UTF-8 LC_ALL=C.UTF-8 gemini -p \"\" -o stream-json --yolo}"
 # For non-streaming mode, set WRAPPER_STREAM=off (skips progress updates).
 : "${WRAPPER_STREAM:=on}"
 
