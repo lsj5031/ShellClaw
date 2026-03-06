@@ -67,9 +67,7 @@ def _chat_id_from_message(msg):
 
 def _is_allowed_chat(chat_id: str):
     # Keep behavior permissive if TELEGRAM_CHAT_ID is missing in the environment.
-    if not CHAT_ID:
-        return True
-    return chat_id == CHAT_ID
+    return not CHAT_ID or chat_id == CHAT_ID
 
 
 class Handler(BaseHTTPRequestHandler):
