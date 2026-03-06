@@ -1384,15 +1384,14 @@ process_update_obj() {
 
   # Detect file attachments (photo, document, video, video_note)
   local attachment_type="" attachment_path=""
-  local photo_file_id
-  photo_file_id="$(jq -r '.message.photo[-1].file_id // empty' <<< "$obj")"
-  local doc_file_id doc_file_name
-  doc_file_id="$(jq -r '.message.document.file_id // empty' <<< "$obj")"
-  doc_file_name="$(jq -r '.message.document.file_name // "document"' <<< "$obj")"
-  local video_file_id
-  video_file_id="$(jq -r '.message.video.file_id // empty' <<< "$obj")"
-  local videonote_file_id
-  videonote_file_id="$(jq -r '.message.video_note.file_id // empty' <<< "$obj")"
+  local photo_file_id doc_file_id doc_file_name video_file_id videonote_file_id
+  eval "$(jq -r '
+    "photo_file_id=" + ((.message.photo[-1].file_id // "") | @sh),
+    "doc_file_id=" + ((.message.document.file_id // "") | @sh),
+    "doc_file_name=" + ((.message.document.file_name // "document") | @sh),
+    "video_file_id=" + ((.message.video.file_id // "") | @sh),
+    "videonote_file_id=" + ((.message.video_note.file_id // "") | @sh)
+  ' <<< "$obj")"
 
   if [[ -n "$photo_file_id" ]]; then
     attachment_type="photo"
