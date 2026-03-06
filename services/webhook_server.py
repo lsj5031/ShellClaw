@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import fcntl
+import hmac
 import json
 import os
 import signal
@@ -85,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if SECRET:
             token = self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-            if token != SECRET:
+            if not hmac.compare_digest(token, SECRET):
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"forbidden")
