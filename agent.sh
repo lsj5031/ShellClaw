@@ -336,7 +336,8 @@ send_long_reply_as_file() {
     return 1
   fi
 
-  local base_path="$INSTANCE_DIR/tmp/reply_$(date +%s%N)"
+  local base_path
+  base_path="$INSTANCE_DIR/tmp/reply_$(date +%s%N)"
   local md_file="${base_path}.md"
   local svg_file="${base_path}.svg"
   local sent_mode=""
@@ -570,11 +571,16 @@ append_memory_and_tasks() {
   local task_lines
   task_lines="$(extract_all_markers "TASK_APPEND" "$agent_output" || true)"
   if [[ -n "$(trim "$task_lines")" ]]; then
+    local sql_cmds=""
     while IFS= read -r line; do
       [[ -z "$(trim "$line")" ]] && continue
       ( flock 9; printf -- "- [ ] %s\n" "$line" >> "$INSTANCE_DIR/TASKS/pending.md" ) 9>"$INSTANCE_DIR/TASKS/pending.md.lock"
-      sqlite_exec "INSERT INTO tasks(ts, source, content, done) VALUES($(sql_quote "$ts"), $(sql_quote "$AGENT_PROVIDER"), $(sql_quote "$line"), 0);"
+      sql_cmds+="INSERT INTO tasks(ts, source, content, done) VALUES($(sql_quote "$ts"), $(sql_quote "$AGENT_PROVIDER"), $(sql_quote "$line"), 0);"
     done <<< "$task_lines"
+
+    if [[ -n "$sql_cmds" ]]; then
+      sqlite_exec "BEGIN TRANSACTION; $sql_cmds COMMIT;"
+    fi
   fi
 }
 
