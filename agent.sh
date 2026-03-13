@@ -1231,15 +1231,28 @@ process_update_obj() {
   local obj="$1"
   local source_mode="${2:-poll}"
   local update_id chat_id message_text voice_file_id input_type turn_update_id
+  local cb_data cb_id cb_chat_id reply_text reply_from
+  local photo_file_id doc_file_id doc_file_name video_file_id videonote_file_id
 
-  update_id="$(extract_update_id "$obj")"
+  eval "$(jq -r '
+    "update_id=" + ((.update_id // 0) | @sh),
+    "cb_data=" + ((.callback_query.data // "") | @sh),
+    "cb_id=" + ((.callback_query.id // "") | @sh),
+    "cb_chat_id=" + ((.callback_query.message.chat.id // "") | @sh),
+    "chat_id=" + ((.message.chat.id // "") | @sh),
+    "message_text=" + ((.message.text // .message.caption // "") | @sh),
+    "reply_text=" + ((.message.reply_to_message.text // .message.reply_to_message.caption // "") | @sh),
+    "reply_from=" + (if .message.reply_to_message then (.message.reply_to_message.from.first_name // "someone") else "" end | @sh),
+    "voice_file_id=" + ((.message.voice.file_id // "") | @sh),
+    "photo_file_id=" + ((.message.photo[-1].file_id // "") | @sh),
+    "doc_file_id=" + ((.message.document.file_id // "") | @sh),
+    "doc_file_name=" + ((.message.document.file_name // "document") | @sh),
+    "video_file_id=" + ((.message.video.file_id // "") | @sh),
+    "videonote_file_id=" + ((.message.video_note.file_id // "") | @sh)
+  ' <<< "$obj")"
 
   # Handle callback_query updates (e.g. cancel button) consumed via poll
-  local cb_data cb_id cb_chat_id
-  cb_data="$(jq -r '.callback_query.data // empty' <<< "$obj" 2>/dev/null)"
   if [[ -n "$cb_data" ]]; then
-    cb_id="$(jq -r '.callback_query.id // empty' <<< "$obj" 2>/dev/null)"
-    cb_chat_id="$(jq -r '.callback_query.message.chat.id // empty' <<< "$obj" 2>/dev/null)"
     if [[ "$cb_data" == "cancel" && "$cb_chat_id" == "$TELEGRAM_CHAT_ID" ]]; then
       log_info "cancel button callback update_id=$update_id"
       "$ROOT_DIR/scripts/telegram_api.sh" --answer-callback "$cb_id" 2>/dev/null || true
@@ -1256,7 +1269,6 @@ process_update_obj() {
     return 0
   fi
 
-  chat_id="$(jq -r '.message.chat.id // empty' <<< "$obj")"
   turn_update_id=""
   if [[ "$update_id" != "0" ]]; then
     turn_update_id="$update_id"
@@ -1272,16 +1284,6 @@ process_update_obj() {
     log_debug "update_id=$update_id has no chat_id; skipping"
     set_kv "last_update_id" "$update_id"
     return 0
-  fi
-
-  message_text="$(jq -r '.message.text // .message.caption // empty' <<< "$obj")"
-
-  # Extract reply/quoted message context
-  local reply_text=""
-  local reply_from=""
-  if jq -e '.message.reply_to_message' <<< "$obj" >/dev/null 2>&1; then
-    reply_text="$(jq -r '.message.reply_to_message.text // .message.reply_to_message.caption // empty' <<< "$obj")"
-    reply_from="$(jq -r '.message.reply_to_message.from.first_name // "someone"' <<< "$obj")"
   fi
 
   if [[ "$chat_id" == "$TELEGRAM_CHAT_ID" && "${message_text,,}" =~ ^/fresh$ ]]; then
@@ -1313,8 +1315,6 @@ process_update_obj() {
     return 0
   fi
 
-  voice_file_id="$(jq -r '.message.voice.file_id // empty' <<< "$obj")"
-
   input_type="text"
   local asr_text=""
   local effective_text="$message_text"
@@ -1338,14 +1338,6 @@ process_update_obj() {
 
   # Detect file attachments (photo, document, video, video_note)
   local attachment_type="" attachment_path=""
-  local photo_file_id doc_file_id doc_file_name video_file_id videonote_file_id
-  eval "$(jq -r '
-    "photo_file_id=" + ((.message.photo[-1].file_id // "") | @sh),
-    "doc_file_id=" + ((.message.document.file_id // "") | @sh),
-    "doc_file_name=" + ((.message.document.file_name // "document") | @sh),
-    "video_file_id=" + ((.message.video.file_id // "") | @sh),
-    "videonote_file_id=" + ((.message.video_note.file_id // "") | @sh)
-  ' <<< "$obj")"
 
   if [[ -n "$photo_file_id" ]]; then
     attachment_type="photo"
