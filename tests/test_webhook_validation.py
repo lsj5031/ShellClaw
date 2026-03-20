@@ -2,10 +2,6 @@ import unittest
 from unittest.mock import Mock, patch, mock_open
 import io
 import os
-import sys
-
-# Add the root directory to sys.path so we can import services
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import services.webhook_server as webhook_server
 
