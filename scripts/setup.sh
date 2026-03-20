@@ -82,12 +82,10 @@ if [[ ! -f state.db ]]; then
   sqlite3 state.db < sql/schema.sql >/dev/null
   echo "Initialized state.db"
 else
-  has_turns="$(sqlite3 state.db "SELECT 1 FROM sqlite_master WHERE type='table' AND name='turns' LIMIT 1;")"
-  if [[ "$has_turns" == "1" ]]; then
-    has_update_id="$(sqlite3 state.db "SELECT 1 FROM pragma_table_info('turns') WHERE name='update_id' LIMIT 1;")"
-    if [[ "$has_update_id" != "1" ]]; then
-      sqlite3 state.db "ALTER TABLE turns ADD COLUMN update_id TEXT;"
-    fi
+  # Check if 'turns' table exists and if 'update_id' column is missing in one go
+  info="$(sqlite3 state.db "SELECT (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='turns'), (SELECT count(*) FROM pragma_table_info('turns') WHERE name='update_id');")"
+  if [[ "$info" == "1|0" ]]; then
+    sqlite3 state.db "ALTER TABLE turns ADD COLUMN update_id TEXT;"
   fi
 
   sqlite3 state.db < sql/schema.sql >/dev/null
