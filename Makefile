@@ -74,10 +74,13 @@ lint: ## Shellcheck all scripts
 test: ## Quick smoke test (inject text)
 	./agent.sh --inject-text "ping"
 
-test-unit: ## Run unit tests
+test-unit: test-python ## Run unit tests
 	./tests/common_test.sh
 	./tests/md_to_telegram_html_test.sh
 	./tests/telegram_api_test.sh
+
+test-python: ## Run python unit tests
+	python3 -m unittest discover tests
 
 test-telegram-api: ## Unit-style Telegram parse-mode tests
 	./tests/telegram_api_test.sh
