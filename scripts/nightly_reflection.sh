@@ -35,13 +35,16 @@ if [[ "$NIGHTLY_REFLECTION_SKIP_AGENT" != "on" ]]; then
   "$ROOT_DIR/agent.sh" --inject-text "$NIGHTLY_REFLECTION_PROMPT"
 fi
 
-prompt_sql="$(sql_quote "$NIGHTLY_REFLECTION_PROMPT")"
+prompt_tmp="$(mktemp)"
+trap 'rm -f "$prompt_tmp"' EXIT
+printf "%s" "$NIGHTLY_REFLECTION_PROMPT" > "$prompt_tmp"
+
 row="$(
   sqlite3 -separator $'\t' "$SQLITE_DB_PATH" \
     "SELECT ts, COALESCE(NULLIF(telegram_reply, ''), NULLIF(voice_reply, ''), ''), status
      FROM turns
      WHERE id > $before_id
-       AND user_text = $prompt_sql
+       AND user_text = CAST(readfile('$prompt_tmp') AS TEXT)
      ORDER BY id DESC
      LIMIT 1;"
 )"
