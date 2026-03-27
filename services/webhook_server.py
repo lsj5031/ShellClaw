@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import signal
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib import parse, request
 
@@ -43,18 +44,22 @@ def _answer_callback(callback_query_id: str, text: str = ""):
     """Acknowledge Telegram callback queries to clear client-side loading state."""
     if not callback_query_id or not BOT_TOKEN:
         return
-    api = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
-    payload = {"callback_query_id": callback_query_id}
-    if text:
-        payload["text"] = text
-    body = parse.urlencode(payload).encode("utf-8")
-    req = request.Request(api, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with request.urlopen(req, timeout=4):
+
+    def _perform_request():
+        api = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        body = parse.urlencode(payload).encode("utf-8")
+        req = request.Request(api, data=body, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with request.urlopen(req, timeout=4):
+                pass
+        except OSError:
             pass
-    except OSError:
-        pass
+
+    threading.Thread(target=_perform_request, daemon=True).start()
 
 
 def _chat_id_from_message(msg):
